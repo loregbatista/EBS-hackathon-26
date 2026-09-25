@@ -20,15 +20,17 @@
 make_coherent_fixture <- function(outDir = "test", seed = 20260924) {
   set.seed(seed)
 
-  mothers <- paste0("MP", 1:3)
-  fathers <- paste0("FP", 1:4)
+  mothers <- paste0("MP", 1:5)
+  fathers <- paste0("FP", 1:5)
   parents <- c(mothers, fathers)
 
   crosses <- expand.grid(mother = mothers, father = fathers, stringsAsFactors = FALSE)
   crosses$designation <- paste0("F1_", sprintf("%02d", seq_len(nrow(crosses))))
 
-  nMarkers <- 30
-  markerIds <- paste0("M", sprintf("%02d", seq_len(nMarkers)))
+  # Comfortably more markers than individuals, so the genomic relationship
+  # matrix is well conditioned for the GEBV model.
+  nMarkers <- 120
+  markerIds <- paste0("M", sprintf("%03d", seq_len(nMarkers)))
 
   # ---- reference/alternate alleles -----------------------------------------
   bases <- c("A", "C", "G", "T")
@@ -118,9 +120,9 @@ make_coherent_fixture <- function(outDir = "test", seed = 20260924) {
 
   pedigree <- rbind(pedParents, pedF1, pedDup)
 
-  # Deliberately mislabel three F1s by swapping in the wrong mother. Their
+  # Deliberately mislabel four F1s by swapping in the wrong mother. Their
   # markers still come from the true mother, so QA should flag them.
-  mislabelled <- crosses$designation[c(2, 5, 9)]
+  mislabelled <- crosses$designation[c(2, 7, 13, 21)]
   for (d in mislabelled) {
     trueMother <- crosses$mother[crosses$designation == d]
     wrongMother <- setdiff(mothers, trueMother)[1]
@@ -154,7 +156,7 @@ make_coherent_fixture <- function(outDir = "test", seed = 20260924) {
   # Designations are phenotyped (parents and F1s); genotypes live on samples.
   designations <- c(parents, crosses$designation)
   occurrences  <- c("occ_A", "occ_B")
-  reps         <- 1:2
+  reps         <- 1:3
 
   pheno <- expand.grid(
     germplasmName  = designations,
@@ -182,12 +184,23 @@ make_coherent_fixture <- function(outDir = "test", seed = 20260924) {
   pheno$paX <- ((idxInOcc - 1) %% side) + 1L
   pheno$paY <- ((idxInOcc - 1) %/% side) + 1L
 
-  # trait with a real genetic signal: additive marker score + env + noise
-  genoScore <- rowMeans(genoDose[match(pheno$germplasmName, rownames(genoDose)), , drop = FALSE])
-  genoScore[is.na(genoScore)] <- mean(genoScore, na.rm = TRUE)
+  # Trait with a genuinely polygenic signal: a weighted sum of marker dosages,
+  # standardised, so genetic variance is large relative to the residual and
+  # heritability is estimable in BOTH environments. A marker-driven trait is
+  # also what makes a GEBV model meaningful - a trait unrelated to the markers
+  # would give a genomic relationship nothing to explain.
+  # The residual sd is chosen so plot-level heritability lands near 0.7, i.e.
+  # comfortably inside MTA's default heritLB/heritUB of 0.1 / 0.95. Too clean a
+  # trait pushes H2 above 0.95 and metLMMsolver then excludes the environment.
+  markerEffects <- stats::rnorm(nMarkers)
+  trueBV <- as.vector(scale(genoDose %*% markerEffects))
+  names(trueBV) <- rownames(genoDose)
+
+  bv <- trueBV[match(pheno$germplasmName, names(trueBV))]
+  bv[is.na(bv)] <- 0
   envEffect <- ifelse(pheno$occurrenceName == "occ_A", 0, 12)
   pheno$Plant_Height_cm <- round(
-    120 + 25 * genoScore + envEffect + stats::rnorm(n, 0, 4), 2
+    120 + 8 * bv + envEffect + stats::rnorm(n, 0, 5), 2
   )
 
   phenoPath <- file.path(outDir, "coherent_pheno.csv")
