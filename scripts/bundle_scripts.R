@@ -2,6 +2,8 @@ bundle_bioflow_scripts <- function(
   input_files = c(
     "packages_verification.R",
     "read_geno_functions.R",
+    "read_pedigree_functions.R",
+    "validate_bioflow_object.R",
     "getBioflowRdata.R"
   ),
   scripts_dir = "scripts",
@@ -45,14 +47,23 @@ bundle_bioflow_scripts <- function(
 }
 
 if (identical(environment(), globalenv()) && !interactive()) {
-  args <- commandArgs(trailingOnly = TRUE)
+  # Wrapped in local() so that sourcing this file does not leak `scripts_dir` /
+  # `output_file` into the caller's global environment - doing so silently
+  # overwrote same-named variables in scripts that source() this one.
+  local({
+    args <- commandArgs(trailingOnly = TRUE)
 
-  scripts_dir <- if (length(args) >= 1 && nzchar(args[1])) args[1] else "scripts"
-  output_file <- if (length(args) >= 2 && nzchar(args[2])) args[2] else "bundled_getBioflowRdata.R"
-  mapping_json_file <- if (length(args) >= 3 && nzchar(args[3])) args[3] else NULL
+    scripts_dir <- if (length(args) >= 1 && nzchar(args[1])) args[1] else "scripts"
+    output_file <- if (length(args) >= 2 && nzchar(args[2])) args[2] else "bundled_getBioflowRdata.R"
 
-  bundle_bioflow_scripts(
-    scripts_dir = scripts_dir,
-    output_file = output_file,
-  )
+    # Only bundle when this file is the script being run, not when it is merely
+    # sourced for its function definitions.
+    invoked <- sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE))
+    if (length(invoked) == 0 || identical(basename(invoked[1]), "bundle_scripts.R")) {
+      bundle_bioflow_scripts(
+        scripts_dir = scripts_dir,
+        output_file = output_file
+      )
+    }
+  })
 }

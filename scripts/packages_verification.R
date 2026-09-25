@@ -1,4 +1,13 @@
-ensure_cran_packages <- function(packages, repos = "https://cloud.r-project.org") {
+# CRAN packages the converter needs. vcfR/adegenet read and hold the markers;
+# stringr/purrr/glue/Matrix are used by read_geno_functions.R; openssl generates
+# the md5 output file name; cli/rlang provide the messaging and input checks.
+BIOFLOW_CRAN_DEPENDENCIES <- c(
+  "vcfR", "adegenet", "cli", "rlang", "remotes",
+  "openssl", "stringr", "purrr", "glue", "Matrix"
+)
+
+ensure_cran_packages <- function(packages = BIOFLOW_CRAN_DEPENDENCIES,
+                                repos = "https://cloud.r-project.org") {
   missing <- packages[!vapply(
     packages,
     function(pkg) requireNamespace(pkg, quietly = TRUE),
@@ -32,6 +41,25 @@ ensure_cran_packages <- function(packages, repos = "https://cloud.r-project.org"
 }
 
 ensure_github_packages <- function(){
-  if (!require(cgiarPipeline)) remotes::install_github("Breeding-Analytics/cgiarPipeline")
-  if (!require(cgiarBase)) remotes::install_github("Breeding-Analytics/cgiarBase")
+  # requireNamespace avoids attaching the packages (and the noisy warning that
+  # require() emits when a package is absent) while still triggering install.
+  if (!requireNamespace("cgiarPipeline", quietly = TRUE)) {
+    remotes::install_github("Breeding-Analytics/cgiarPipeline")
+  }
+  if (!requireNamespace("cgiarBase", quietly = TRUE)) {
+    remotes::install_github("Breeding-Analytics/cgiarBase")
+  }
+
+  still_missing <- c("cgiarPipeline", "cgiarBase")[
+    !vapply(c("cgiarPipeline", "cgiarBase"),
+            function(pkg) requireNamespace(pkg, quietly = TRUE),
+            FUN.VALUE = logical(1))
+  ]
+  if (length(still_missing) > 0) {
+    stop(
+      sprintf("Required Breeding-Analytics packages are unavailable: %s",
+              paste(still_missing, collapse = ", ")),
+      call. = FALSE
+    )
+  }
 }
