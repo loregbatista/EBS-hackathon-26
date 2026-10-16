@@ -59,7 +59,6 @@
 # Mirrors the vocabulary offered by bioflow/R/mod_getDataPed.R.
 PED_CANONICAL_PARAMS <- c(
   "designation",
-  "sample_id",
   "mother",
   "father",
   "crossType",
@@ -81,8 +80,6 @@ PED_HEADER_SYNONYMS <- list(
   designation  = c("designation", "germplasmname", "germplasm", "germplasmcode",
                    "line", "linename", "genotype", "genotypename", "entryname",
                    "accession", "accessionname"),
-  sample_id    = c("sampleid", "sample", "samplename", "samplecode",
-                   "dnasampleid", "sampledbid", "tissuesampleid", "sampleno"),
   mother       = c("mother", "mothername", "female", "femaleparent", "femalename",
                    "parent1", "parenta", "hybridparent1", "seedparent", "p1"),
   father       = c("father", "fathername", "male", "maleparent", "malename",

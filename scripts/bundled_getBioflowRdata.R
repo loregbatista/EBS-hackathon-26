@@ -1,6 +1,6 @@
 # Auto-generated file. Do not edit directly.
 # Source scripts are maintained in modular files under scripts/.
-# Generated on: 2026-10-09 08:28:48
+# Generated on: 2026-10-16 11:27:21
 
 # ---- BEGIN: packages_verification.R ----
 # CRAN packages the converter needs. vcfR/adegenet read and hold the markers;
@@ -999,7 +999,6 @@ get_filter_log <- function(ogl,filter_step_log){
 # Mirrors the vocabulary offered by bioflow/R/mod_getDataPed.R.
 PED_CANONICAL_PARAMS <- c(
   "designation",
-  "sample_id",
   "mother",
   "father",
   "crossType",
@@ -1021,8 +1020,6 @@ PED_HEADER_SYNONYMS <- list(
   designation  = c("designation", "germplasmname", "germplasm", "germplasmcode",
                    "line", "linename", "genotype", "genotypename", "entryname",
                    "accession", "accessionname"),
-  sample_id    = c("sampleid", "sample", "samplename", "samplecode",
-                   "dnasampleid", "sampledbid", "tissuesampleid", "sampleno"),
   mother       = c("mother", "mothername", "female", "femaleparent", "femalename",
                    "parent1", "parenta", "hybridparent1", "seedparent", "p1"),
   father       = c("father", "fathername", "male", "maleparent", "malename",
