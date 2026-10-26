@@ -1,0 +1,92 @@
+==================================================================
+ USE CASE: 3) Pedigree qa/qc (later generations; crossType F1 -> F6) 
+ directory: use_cases/3_Pedigree_qaqc 
+==================================================================
+
+Mapped 'sample_code' -> sample_id.
+Mapped 'year' -> yearOfOrigin.
+Carried 1 additional pedigree column(s) through to the R object: entry.
+Read 14 pedigree row(s); 8 have both parents recorded.
+crossType == 'F1' on 0 row(s).
+Genotype QA/QC analysisId: 1793057199
+Scanning file to determine attributes.
+File attributes:
+  meta lines: 1
+  header_line: 2
+  variant count: 10
+  column count: 23
+Meta line 1 read in.
+All meta lines processed.
+gt matrix initialized.
+Character matrix gt created.
+  Character matrix gt rows: 10
+  Character matrix gt cols: 23
+  skip: 0
+  nrows: 10
+  row_num: 0
+Processed variant: 10
+All variants processed
+Aligned 14 parental genotype sample(s) to their designation so F1/Pedigree
+qa/qc can match parents; F1 progeny kept under their sample_id.
+[1] "filter_processing..."
+Missing genotype calls 10
+Saved: use_cases/3_Pedigree_qaqc/pedigree_qaqc_input.RData
+
+=========================================================
+ Bioflow use-case readiness report
+=========================================================
+
+[NOT READY] MTA (Multi Trial Analysis)
+  FAIL phenotypic data is present
+         -> MTA is a phenotype analysis; with no phenotype data there is nothing to analyze
+  FAIL SOA (Single Trial Analysis) has been run
+         -> mod_mtaLMMsolveApp.R blocks the run when there is no 'soa' (STA) stamp in status
+  FAIL status$analysisId is numeric
+         -> the STA dropdown calls as.POSIXct(analysisId); a character id yields NA labels
+  ok   no duplicate 'sta' status rows
+  FAIL predictions exist for the STA analysisId
+         -> metLMMsolver stops with 'Not enough data ... perform an STA' when < 2 rows
+  FAIL predictions carry the columns MTA reads
+         -> missing: analysisId, trait, environment, designation, predictedValue, stdError, reliability, entryType
+  ok   predictions has no non-canonical extra column
+  FAIL modeling has designationEffectType for the STA id
+         -> metLMMsolver evaluates if(... == 'BLUP'); absence gives 'missing value where TRUE/FALSE needed'
+  FAIL metrics carry an H2/r2 parameter for the STA id
+         -> metLMMsolver keeps only environments whose heritability falls in [heritLB, heritUB]
+  FAIL metadata$pheno maps environment, designation and trait
+         -> missing: environment, designation, trait - the MTA input panels stay hidden
+  FAIL data$pheno has a literal 'environment' column
+         -> cgiarPipeline::summaryWeather() aggregates on it when data$weather is absent
+  FAIL at least 2 environments with >1 prediction row
+         -> found 0; mod_mtaLMMsolveApp.R zeroes any env x trait cell <= 1
+
+[NOT READY] F1 qa/qc (gVerif)
+  ok   data$geno is a genlight object
+  ok   status contains a 'qaGeno' row
+  ok   data$geno_imp is keyed by the qaGeno analysisId
+  ok   metadata$geno has a 'ploidity' row
+  ok   data$pedigree is present
+  ok   pedigree has a crossType column
+  FAIL crossType contains the literal 'F1'
+         -> the comparison is == "F1", case-sensitive
+  ok   crossType has no missing values
+  ok   at least 8 markers
+
+[READY]     Pedigree qa/qc (qaPed)
+  ok   data$geno is present
+  ok   data$geno has allele strings in loc.all
+  ok   status contains a 'qaGeno' row
+  ok   data$geno_imp is keyed by the qaGeno analysisId
+  ok   metadata$pedigree maps 'father' to a non-empty column
+  ok   pedigree resolves designation, mother and father
+  ok   metadata$pedigree aligns positionally with data$pedigree
+  ok   at least one fully genotyped designation/mother/father triplet
+  ok   at least 2 fully genotyped triplets for clustering
+  ok   triplet-completeness gate for the comparison is met
+
+---------------------------------------------------------
+Summary: 1 of 3 use case(s) ready
+---------------------------------------------------------
+
+Diagnostics written to:
+use_cases/3_Pedigree_qaqc/pedigree_qaqc_input.diagnostics.json
