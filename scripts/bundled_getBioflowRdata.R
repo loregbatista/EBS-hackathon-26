@@ -1,6 +1,6 @@
 # Auto-generated file. Do not edit directly.
 # Source scripts are maintained in modular files under scripts/.
-# Generated on: 2026-10-16 11:27:21
+# Generated on: 2026-10-26 16:34:36
 
 # ---- BEGIN: packages_verification.R ----
 # CRAN packages the converter needs. vcfR/adegenet read and hold the markers;
@@ -999,6 +999,7 @@ get_filter_log <- function(ogl,filter_step_log){
 # Mirrors the vocabulary offered by bioflow/R/mod_getDataPed.R.
 PED_CANONICAL_PARAMS <- c(
   "designation",
+  "sample_id",
   "mother",
   "father",
   "crossType",
@@ -1020,6 +1021,8 @@ PED_HEADER_SYNONYMS <- list(
   designation  = c("designation", "germplasmname", "germplasm", "germplasmcode",
                    "line", "linename", "genotype", "genotypename", "entryname",
                    "accession", "accessionname"),
+  sample_id    = c("sampleid", "sample", "samplename", "samplecode",
+                   "dnasampleid", "sampledbid", "tissuesampleid", "sampleno"),
   mother       = c("mother", "mothername", "female", "femaleparent", "femalename",
                    "parent1", "parenta", "hybridparent1", "seedparent", "p1"),
   father       = c("father", "fathername", "male", "maleparent", "malename",
@@ -1408,6 +1411,70 @@ read_pedigree_file <- function(pedigreeFile,
   list(data = pedigreeData, metadata = pedigreeMetadata, notes = notes)
 }
 
+#' Align genotype individual names to the pedigree identifier space
+#'
+#' EBS genotype exports key the VCF samples by sample_id (sample_code), but
+#' Bioflow's F1 qa/qc matches parents by `designation` and Pedigree qa/qc
+#' matches designation/mother/father triplets by `designation`. When the
+#' pedigree provides a sample_id -> designation mapping, the parental samples in
+#' the genlight must therefore be renamed to their designation, while the F1
+#' progeny are kept under their sample_id (F1 qa/qc looks progeny up by
+#' sample_id, and sibling F1s can share a designation).
+#'
+#' This mirrors bioflow/R/mod_getDataGeno.R::translate_ind_names() so the object
+#' this script writes behaves the same as one prepared through the Bioflow UI.
+#' Orientation-aware and idempotent: names already in the designation space are
+#' left untouched, so a designation-keyed VCF, a sample_id-keyed VCF and a mixed
+#' VCF all come out correct.
+#'
+#' @param gl A genlight object (the loaded genotypes).
+#' @param pedigreeData data$pedigree, canonical column names.
+#' @return `gl` with parental individual names translated to designations.
+align_geno_to_pedigree <- function(gl, pedigreeData) {
+  if (!inherits(gl, "genlight")) return(gl)
+  if (is.null(pedigreeData) || !("sample_id" %in% colnames(pedigreeData)) ||
+      !("designation" %in% colnames(pedigreeData))) {
+    return(gl)
+  }
+
+  inds <- as.character(adegenet::indNames(gl))
+
+  sid   <- as.character(pedigreeData$sample_id)
+  desig <- as.character(pedigreeData$designation)
+
+  # crossType, if present, tells us which rows are F1 progeny (kept as sample_id).
+  isF1row <- if ("crossType" %in% colnames(pedigreeData)) {
+    toupper(as.character(pedigreeData$crossType)) == "F1"
+  } else {
+    rep(FALSE, nrow(pedigreeData))
+  }
+
+  # Map each genlight name (assumed sample_id) to its pedigree row.
+  row_idx <- match(inds, sid)
+
+  final <- inds
+  for (i in seq_along(inds)) {
+    r <- row_idx[i]
+    if (is.na(r)) next                                   # not a sample_id; leave as is
+    if (isTRUE(isF1row[r])) next                         # F1 progeny: keep sample_id
+    d <- desig[r]
+    if (!is.na(d) && nzchar(d) && !identical(inds[i], d)) {
+      final[i] <- d                                      # parent: sample_id -> designation
+    }
+  }
+
+  if (!identical(final, inds)) {
+    nTranslated <- sum(final != inds)
+    cli::cli_inform(paste0(
+      "Aligned ", nTranslated, " parental genotype sample(s) to their ",
+      "designation so F1/Pedigree qa/qc can match parents; F1 progeny kept ",
+      "under their sample_id."
+    ))
+    adegenet::indNames(gl) <- final
+  }
+  gl
+}
+
 #' Build the placeholder pedigree used when no pedigree file is supplied
 #'
 #' Keeps the schema of `cgiarBase::create_getData_object()` so nothing
@@ -1674,7 +1741,16 @@ validate_use_case_f1 <- function(object) {
   indNames <- vbo_geno_ind_names(object)
   if (!is.null(ped) && hasF1 && length(indNames) > 0) {
     f1 <- ped[which(ped$crossType == "F1"), , drop = FALSE]
-    progenyKey <- if ("sample_id" %in% colnames(ped)) "sample_id" else "designation"
+    # Orientation-aware progeny key: do not assume the genlight is keyed by
+    # sample_id merely because a sample_id column exists. Pick whichever key's
+    # values actually overlap the marker-matrix individual names, so a
+    # designation-keyed VCF (with or without a sample_id column) still matches.
+    progenyKey <- "designation"
+    if ("sample_id" %in% colnames(ped)) {
+      nBySid   <- length(intersect(unique(stats::na.omit(f1$sample_id)),   indNames))
+      nByDesig <- length(intersect(unique(stats::na.omit(f1$designation)), indNames))
+      if (nBySid >= nByDesig && nBySid > 0) progenyKey <- "sample_id"
+    }
     nProgeny <- length(intersect(unique(f1[[progenyKey]]), indNames))
     nMother  <- length(intersect(unique(stats::na.omit(f1$mother)), indNames))
     nFather  <- length(intersect(unique(stats::na.omit(f1$father)), indNames))
@@ -1780,18 +1856,276 @@ validate_use_case_ped <- function(object) {
       paste0(nTriplets, " of ", nrow(pedCanon),
              " row(s) have all three individuals in the marker matrix; ",
              "without any, every metric is 'NO GENO DATA' and mclust::Mclust() errors"))
+
+    # plot_GRM() runs mclust::Mclust(..., G = 2) on the matched triplets, which
+    # needs at least 2 observations to fit a 2-component model.
+    checks <- vbo_check(checks, nTriplets >= 2,
+      "at least 2 fully genotyped triplets for clustering",
+      paste0("found ", nTriplets,
+             "; plot_GRM() calls mclust::Mclust(GLM_metric, G = 2), which errors with < 2 points"))
+
+    # plot_impossible() / hist_wrongG only run the real comparison when the share
+    # of rows with all three of designation/mother/father present clears the
+    # module's gate: (count_complete * 100) / nrow(peddata) >= 0.8. (This is the
+    # module's literal expression; mirror it so readiness matches module behaviour.)
+    nComplete <- sum(complete)
+    gateOk <- nrow(pedCanon) > 0 && ((nComplete * 100) / nrow(pedCanon)) >= 0.8
+    checks <- vbo_check(checks, gateOk,
+      "triplet-completeness gate for the comparison is met",
+      paste0(nComplete, " of ", nrow(pedCanon),
+             " row(s) have designation, mother and father all present; ",
+             "plot_impossible() takes the 'Not enough matching information' branch otherwise"))
   }
 
   checks
+}
+
+# ---------------------------------------------------------------------------
+# Human-friendly diagnostics (for EBS software engineers, not QG specialists)
+# ---------------------------------------------------------------------------
+
+#' One-line plain-language description of what each use case is for.
+#' @noRd
+VBO_USECASE_INFO <- list(
+  "MTA (Multi Trial Analysis)" = list(
+    id      = "mta",
+    purpose = "Combine trials across environments to estimate genetic values (needs phenotypes and a Single Trial Analysis)."
+  ),
+  "F1 qa/qc (gVerif)" = list(
+    id      = "f1_qaqc",
+    purpose = "Check that each F1 hybrid is really the cross of its recorded mother and father, using marker data."
+  ),
+  "Pedigree qa/qc (qaPed)" = list(
+    id      = "pedigree_qaqc",
+    purpose = "Check recorded parentage of later-generation lines against marker data (designation/mother/father triplets)."
+  )
+)
+
+#' Plain-language meaning + concrete fix action, keyed by the check's
+#' `requirement` string. Target reader: an EBS software engineer preparing the
+#' phenotype/pedigree/VCF files and running the Rscript. Keep this copy free of
+#' QG/Bioflow internals; say what is wrong with the INPUT and what to change.
+#'
+#' Any check not listed here falls back to its technical `detail` string, so the
+#' JSON is always complete even if copy is missing.
+#' @noRd
+VBO_FRIENDLY <- list(
+  # ---- MTA -------------------------------------------------------------
+  "status contains a 'sta' row" = list(
+    meaning = "Single Trial Analysis has not been run on this object, so trial-combining analysis cannot start.",
+    action  = "Re-run the script with runSOA = TRUE so Single Trial Analysis is performed before export."),
+  "status$analysisId is numeric" = list(
+    meaning = "The analysis identifier is not a number, which the analysis stamp menu cannot read.",
+    action  = "Re-generate the object with this script (it creates numeric analysis IDs); do not hand-edit the IDs."),
+  "no duplicate 'sta' status rows" = list(
+    meaning = "There is more than one Single Trial Analysis entry, which confuses the analysis menu.",
+    action  = "Re-generate the object from a single run; avoid merging multiple exports."),
+  "predictions exist for the STA analysisId" = list(
+    meaning = "No trial results were produced, usually because phenotypes or traits were missing or too sparse.",
+    action  = "Check that the phenotype file has the chosen traits with enough data, and run with runSOA = TRUE."),
+  "predictions carry the columns MTA reads" = list(
+    meaning = "The results table is missing columns the trial-combining analysis needs.",
+    action  = "Re-generate with this script unmodified; if it persists, the phenotype file may be missing required fields."),
+  "predictions has no non-canonical extra column" = list(
+    meaning = "The results table has an unexpected extra column that breaks trial-combining.",
+    action  = "Re-generate with this script unmodified; do not add columns to the exported object."),
+  "modeling has designationEffectType for the STA id" = list(
+    meaning = "The Single Trial Analysis did not record how genotype effects were modelled.",
+    action  = "Re-run with runSOA = TRUE so Single Trial Analysis records this automatically."),
+  "metrics carry an H2/r2 parameter for the STA id" = list(
+    meaning = "No heritability/reliability metric was produced by Single Trial Analysis.",
+    action  = "Re-run with runSOA = TRUE and ensure traits have enough replicated data."),
+  "metadata$pheno maps environment, designation and trait" = list(
+    meaning = "The phenotype column mapping is incomplete (environment, designation and trait must all be mapped).",
+    action  = "Check the phenotype file has the expected EBS columns so the script can map environment, germplasmName and the traits."),
+  "data$pheno has a literal 'environment' column" = list(
+    meaning = "The phenotype data has no 'environment' column for grouping trials.",
+    action  = "Provide the EBS phenotype fields the script builds 'environment' from (stage, year, season, site, experiment, occurrence)."),
+  "at least 2 environments with >1 prediction row" = list(
+    meaning = "Trial-combining needs results from at least two environments; fewer were found.",
+    action  = "Provide phenotype data spanning at least two environments (occurrences)."),
+
+  # ---- shared geno -----------------------------------------------------
+  "data$geno is a genlight object" = list(
+    meaning = "The genotype data was not loaded into the expected marker format.",
+    action  = "Provide a valid VCF as the genotype file so the script can build the marker matrix."),
+  "status contains a 'qaGeno' row" = list(
+    meaning = "The genotype QA step is missing, so marker-based modules cannot start.",
+    action  = "Provide a genotype (VCF) file; the script runs genotype QA automatically when one is supplied."),
+  "data$geno_imp is keyed by the qaGeno analysisId" = list(
+    meaning = "The imputed marker data is not linked to the genotype QA step.",
+    action  = "Re-generate with this script unmodified (it links these automatically); provide a valid VCF."),
+  "metadata$geno has a 'ploidity' row" = list(
+    meaning = "The genotype ploidy was not recorded.",
+    action  = "Re-generate with this script unmodified; provide a VCF with genotype calls it can read."),
+  "at least 8 markers" = list(
+    meaning = "There are too few markers for a reliable verification (at least 8 are needed).",
+    action  = "Provide a VCF with at least 8 usable markers (more is better)."),
+
+  # ---- F1 qa/qc --------------------------------------------------------
+  "data$pedigree is present" = list(
+    meaning = "No pedigree information was supplied.",
+    action  = "Provide the pedigree CSV as the pedigree file."),
+  "pedigree has a crossType column" = list(
+    meaning = "The pedigree does not say which individuals are F1 hybrids.",
+    action  = "Add a crossType column (or an 'entry'/type column) marking F1 hybrids; parents can be left as 'parent'."),
+  "crossType contains the literal 'F1'" = list(
+    meaning = "No rows are marked as F1 hybrids, so there is nothing to verify as a hybrid.",
+    action  = "Label the hybrid rows as F1 (e.g. 'F1' or 'hybrid') in the crossType column. Note: labels like 'F6' are NOT treated as F1."),
+  "crossType has no missing values" = list(
+    meaning = "Some rows have a blank crossType, which corrupts the hybrid selection.",
+    action  = "Fill every crossType cell (use 'parent' for non-hybrids); the script fills blanks with 'parent' automatically when it can."),
+  "F1 progeny (sample_id) found in the marker matrix" = list(
+    meaning = "The genotyped F1 hybrids could not be matched to the pedigree.",
+    action  = "Make sure the F1 samples in the VCF match the pedigree (by sample_code when provided, otherwise by designation)."),
+  "F1 progeny (designation) found in the marker matrix" = list(
+    meaning = "The genotyped F1 hybrids could not be matched to the pedigree by designation.",
+    action  = "Make sure the F1 sample names in the VCF match the pedigree designations (or provide a sample_code column that maps to them)."),
+  "F1 mothers found in the marker matrix" = list(
+    meaning = "The mothers of the F1 hybrids are not genotyped, so the cross cannot be verified.",
+    action  = "Include the mother (female parent) genotypes in the VCF; their designations must match the pedigree 'mother' column."),
+  "F1 fathers found in the marker matrix" = list(
+    meaning = "The fathers of the F1 hybrids are not genotyped, so the cross cannot be verified.",
+    action  = "Include the father (male parent) genotypes in the VCF; their designations must match the pedigree 'father' column."),
+
+  # ---- Pedigree qa/qc --------------------------------------------------
+  "data$geno is present" = list(
+    meaning = "No genotype data was supplied for pedigree verification.",
+    action  = "Provide the VCF genotype file."),
+  "data$geno has allele strings in loc.all" = list(
+    meaning = "The marker allele information needed for pedigree checks is missing.",
+    action  = "Provide a standard VCF with REF/ALT alleles so the script can record allele strings."),
+  "metadata$pedigree maps 'father' to a non-empty column" = list(
+    meaning = "The pedigree does not map a father (male parent) column.",
+    action  = "Add a father/male-parent column to the pedigree file."),
+  "pedigree resolves designation, mother and father" = list(
+    meaning = "The pedigree is missing one of the required columns: designation, mother or father.",
+    action  = "Ensure the pedigree file has designation, mother and father columns (empty parents allowed)."),
+  "metadata$pedigree aligns positionally with data$pedigree" = list(
+    meaning = "The pedigree columns and their descriptions are out of step (an internal consistency problem).",
+    action  = "Re-generate with this script unmodified; do not reorder or rename columns in the exported object."),
+  "at least one fully genotyped designation/mother/father triplet" = list(
+    meaning = "No line has its designation, mother AND father all genotyped, so no triplet can be checked.",
+    action  = "Genotype the lines together with both their parents, and make sure all three names match the VCF (as designations)."),
+  "at least 2 fully genotyped triplets for clustering" = list(
+    meaning = "Fewer than two complete (line + both parents genotyped) triplets exist; the statistics need at least two.",
+    action  = "Provide at least two lines that have both parents genotyped, with names matching the VCF (as designations)."),
+  "triplet-completeness gate for the comparison is met" = list(
+    meaning = "Too few pedigree rows list a designation, mother and father together for the comparison to run.",
+    action  = "Fill in mother and father for the lines you want checked so most rows have all three recorded.")
+)
+
+#' Attach friendly meaning/action to a checks data.frame
+#' @noRd
+vbo_decorate_checks <- function(tbl) {
+  n <- nrow(tbl)
+  meaning <- character(n)
+  action  <- character(n)
+  for (i in seq_len(n)) {
+    f <- VBO_FRIENDLY[[tbl$requirement[i]]]
+    if (!is.null(f)) {
+      meaning[i] <- f$meaning
+      action[i]  <- f$action
+    } else {
+      # Fall back to the technical detail so nothing is ever blank.
+      meaning[i] <- tbl$detail[i]
+      action[i]  <- ""
+    }
+  }
+  tbl$meaning <- meaning
+  tbl$action  <- action
+  tbl
+}
+
+#' Build the diagnostics payload (a plain list ready for jsonlite::toJSON)
+#' @noRd
+vbo_json_payload <- function(useCases, ready, inputs = NULL) {
+  overallReady <- as.logical(ready)
+  readyNames   <- names(ready)[overallReady]
+
+  useCaseList <- lapply(names(useCases), function(nm) {
+    tbl  <- vbo_decorate_checks(useCases[[nm]])
+    info <- VBO_USECASE_INFO[[nm]]
+    isReady <- isTRUE(ready[[nm]])
+
+    failed <- tbl[!tbl$ok, , drop = FALSE]
+    checksOut <- lapply(seq_len(nrow(tbl)), function(i) {
+      list(
+        passed            = isTRUE(tbl$ok[i]),
+        requirement       = tbl$requirement[i],
+        what_it_means     = tbl$meaning[i],
+        how_to_fix        = if (!tbl$ok[i]) tbl$action[i] else "",
+        technical_detail  = tbl$detail[i]
+      )
+    })
+
+    list(
+      use_case        = nm,
+      id              = if (!is.null(info)) info$id else NA_character_,
+      what_it_checks  = if (!is.null(info)) info$purpose else "",
+      ready           = isReady,
+      status          = if (isReady) "READY" else "NOT READY",
+      summary         = if (isReady) {
+        paste0("This file can run ", nm, ".")
+      } else {
+        paste0("This file cannot run ", nm, " yet: ",
+               nrow(failed), " requirement(s) not met. See 'how_to_fix' below.")
+      },
+      checks_passed   = sum(tbl$ok),
+      checks_total    = nrow(tbl),
+      blocking_issues = unname(failed$requirement),
+      checks          = checksOut
+    )
+  })
+
+  list(
+    schema_version = "1.0",
+    generated_at   = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
+    audience       = "EBS software engineers preparing Bioflow input files",
+    inputs         = inputs,
+    overall = list(
+      ready_use_cases     = unname(readyNames),
+      not_ready_use_cases = unname(names(ready)[!overallReady]),
+      ready_count         = sum(overallReady),
+      total_use_cases     = length(ready),
+      verdict             = if (all(overallReady)) {
+        "All use cases are ready."
+      } else if (any(overallReady)) {
+        paste0(sum(overallReady), " of ", length(ready),
+               " use cases are ready. The rest list what to fix under 'use_cases'.")
+      } else {
+        "No use cases are ready yet. See each use case's 'how_to_fix' guidance."
+      }
+    ),
+    use_cases = useCaseList
+  )
+}
+
+#' Write the diagnostics JSON to disk
+#' @noRd
+write_diagnostics_json <- function(payload, path) {
+  if (is.null(path) || !nzchar(path)) return(invisible(NULL))
+  if (!requireNamespace("jsonlite", quietly = TRUE)) {
+    cli::cli_warn("Package 'jsonlite' is not available; skipping diagnostics JSON.")
+    return(invisible(NULL))
+  }
+  json <- jsonlite::toJSON(payload, pretty = TRUE, auto_unbox = TRUE, null = "null", na = "null")
+  writeLines(json, path, useBytes = TRUE)
+  cli::cli_inform(paste0("Diagnostics written to: ", path))
+  invisible(path)
 }
 
 #' Report whether a generated object can run the three EBS use cases
 #'
 #' @param object A Bioflow result object (the list saved as `result`).
 #' @param verbose Print a human-readable report. Default TRUE.
+#' @param diagnosticsFile Optional path. When given, an engineer-friendly
+#'   diagnostics JSON (readiness per use case plus plain-language meaning and
+#'   fix actions) is written there.
+#' @param inputs Optional named list of input file paths recorded in the JSON.
 #' @return Invisibly, a named list of data.frames (one per use case), each with
 #'   `ok`, `requirement` and `detail` columns, plus a `ready` attribute.
-validate_bioflow_object <- function(object, verbose = TRUE) {
+validate_bioflow_object <- function(object, verbose = TRUE, diagnosticsFile = NULL, inputs = NULL) {
 
   useCases <- list(
     "MTA (Multi Trial Analysis)" = validate_use_case_mta(object),
@@ -1820,6 +2154,12 @@ validate_bioflow_object <- function(object, verbose = TRUE) {
     cat("\n---------------------------------------------------------\n")
     cat("Summary: ", sum(ready), " of ", length(ready), " use case(s) ready\n", sep = "")
     cat("---------------------------------------------------------\n\n")
+  }
+
+  # Write the machine-readable, engineer-friendly diagnostics JSON.
+  if (!is.null(diagnosticsFile) && nzchar(diagnosticsFile)) {
+    payload <- vbo_json_payload(useCases, ready, inputs = inputs)
+    write_diagnostics_json(payload, diagnosticsFile)
   }
 
   invisible(useCases)
@@ -1894,19 +2234,21 @@ validate_bioflow_object <- function(object, verbose = TRUE) {
 #' @param deriveCrossType logical; when `pedigreeFile` has no crossType column, infer one from parent completeness so the F1 qa/qc module can run. Default TRUE.
 #' @param runSOA logical; run `cgiarPipeline::staLMM()` so the object arrives MTA-ready. Default TRUE. Set FALSE to export a pedigree/genotype-only object for the qa/qc use cases.
 #' @param validate logical; print the use-case readiness report. Default TRUE.
+#' @param diagnosticsFile optional path for the diagnostics JSON. When NULL it is written beside the RData as `<outputFile>.diagnostics.json`. The JSON reports, per use case (MTA, F1 qa/qc, Pedigree qa/qc), whether the file is READY plus, for each unmet requirement, a plain-language meaning and a concrete fix action aimed at the EBS engineer preparing the files.
 #'
-#' @return Invisibly, a list with `result` (the object written) and `file` (the
-#'   path it was written to).
+#' @return Invisibly, a list with `result` (the object written), `file` (the
+#'   path it was written to) and `diagnosticsFile` (the diagnostics JSON path).
 # -------------------------------------------------------------------------------------
 
 getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeFile = NULL,
                      traits = NULL, outputPath, outputFile = NULL, requestId = NULL,
                      pedigreeMapping = NULL, deriveCrossType = TRUE,
-                     runSOA = FALSE, validate = TRUE) {
+                     runSOA = FALSE, validate = TRUE, diagnosticsFile = NULL) {
 
   # Now we can use ensure_cran_packages since packages_verification.R has been sourced
   ensure_cran_packages(c("vcfR", "adegenet", "cli", "rlang", "remotes",
-                         "openssl", "stringr", "purrr", "glue", "Matrix"))
+                         "openssl", "stringr", "purrr", "glue", "Matrix",
+                         "jsonlite"))
   # Install if not cgiarPipelines and cgiarBase using remotes
   ensure_github_packages()
 
@@ -2058,6 +2400,15 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
 
 
     data_geno <- read_vcf(genotypeFile)
+
+    # EBS VCFs key samples by sample_id (sample_code), but F1 qa/qc matches
+    # parents by designation and Pedigree qa/qc matches designation/mother/father
+    # triplets by designation. Translate parental sample_ids to their designation
+    # (keeping F1 progeny under their sample_id) so both qa/qc modules can match
+    # the parents. No-op when the pedigree carries no sample_id mapping or the
+    # VCF is already designation-keyed.
+    data_geno <- align_geno_to_pedigree(data_geno, data_pedigree)
+
     genoPloidy <- max(adegenet::ploidy(data_geno))
 
     filter_1 <- list("maf", ">=", 0)
@@ -2224,11 +2575,27 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
   save(result, file = outFilePath)
   cat(paste0("Saved: ", outFilePath, "\n"))
 
+  # Diagnostics JSON: default beside the .RData as <outputFile>.diagnostics.json.
+  if (is.null(diagnosticsFile)) {
+    diagnosticsFile <- file.path(outputPath, paste0(outputFile, ".diagnostics.json"))
+  }
+  diagInputs <- list(
+    phenotypeFile = if (!is.null(phenotypeFile) && nzchar(phenotypeFile)) phenotypeFile else NA_character_,
+    pedigreeFile  = if (!is.null(pedigreeFile)  && nzchar(pedigreeFile))  pedigreeFile  else NA_character_,
+    genotypeFile  = if (!is.null(genotypeFile)  && nzchar(genotypeFile))  genotypeFile  else NA_character_,
+    outputFile    = outFilePath
+  )
+
   if (isTRUE(validate)) {
-    validate_bioflow_object(result)
+    validate_bioflow_object(result, diagnosticsFile = diagnosticsFile, inputs = diagInputs)
+  } else {
+    # Even when the console report is suppressed, still emit the JSON so the
+    # EBS engineer always gets a machine-readable diagnostics artifact.
+    validate_bioflow_object(result, verbose = FALSE,
+                            diagnosticsFile = diagnosticsFile, inputs = diagInputs)
   }
 
-  invisible(list(result = result, file = outFilePath))
+  invisible(list(result = result, file = outFilePath, diagnosticsFile = diagnosticsFile))
 
 } # end of staRData fxn
 # ---- END: getBioflowRdata.R ----

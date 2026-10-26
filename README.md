@@ -25,6 +25,15 @@ case, which requirements are met and what is missing. Each check names the
 Bioflow module or pipeline function that enforces it, so a failure is
 actionable.
 
+It also writes a **diagnostics JSON** next to the `.RData` (named
+`<outputFile>.diagnostics.json`, or pass `diagnosticsFile` to choose the path).
+The JSON is written for the EBS software engineer preparing the input files: for
+each use case it gives a `READY` / `NOT READY` status and, for every unmet
+requirement, a plain-language `what_it_means` and a concrete `how_to_fix`
+action, alongside the original `technical_detail`. A top-level `overall.verdict`
+summarises which use cases the file can drive. The path is returned as
+`out$diagnosticsFile`.
+
 ### What it does
 
 - Checks for required CRAN packages and installs missing ones (`vcfR`,
@@ -58,8 +67,9 @@ out <- getBioflowRData(
   runSOA        = TRUE
 )
 
-out$file     # path of the file that was written
-out$result   # the object itself
+out$file            # path of the file that was written
+out$result          # the object itself
+out$diagnosticsFile # path of the diagnostics JSON
 ```
 
 ### Usage to run F1 QA/QC or pedigree verification
@@ -78,8 +88,9 @@ out <- getBioflowRData(
   runSOA        = FALSE
 )
 
-out$file     # path of the file that was written
-out$result   # the object itself
+out$file            # path of the file that was written
+out$result          # the object itself
+out$diagnosticsFile # path of the diagnostics JSON
 ```
 `outputPath` is the directory and `outputFile` is the file name. When
 `outputFile` is `NULL` the file is named with the md5 hash of the phenotype

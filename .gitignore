@@ -11,3 +11,6 @@ test/*.RData
 .Rhistory
 .RData
 .Rproj.user/
+
+# Diagnostics JSON generated alongside the RData export
+*.diagnostics.json
