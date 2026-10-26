@@ -1,6 +1,6 @@
 # Auto-generated file. Do not edit directly.
 # Source scripts are maintained in modular files under scripts/.
-# Generated on: 2026-10-26 16:34:36
+# Generated on: 2026-10-26 17:06:20
 
 # ---- BEGIN: packages_verification.R ----
 # CRAN packages the converter needs. vcfR/adegenet read and hold the markers;
@@ -1595,12 +1595,21 @@ validate_use_case_mta <- function(object) {
   checks <- NULL
   status <- object$status
 
-  hasSta <- !is.null(status) && "sta" %in% status$module
-  checks <- vbo_check(checks, hasSta,
-    "status contains a 'sta' row",
-    "mod_mtaLMMsolveApp.R blocks the run when sum(status$module %in% 'sta') == 0")
+  # The STA step now stamps module "soa" (older objects used "sta").
+  staModules <- c("soa", "sta")
+  # MTA's real requirements: phenotypic data is present, and SOA (Single
+  # Occurrence/Trial Analysis) ran successfully on it.
+  hasPheno <- !is.null(object$data$pheno) && nrow(object$data$pheno) > 0
+  checks <- vbo_check(checks, hasPheno,
+    "phenotypic data is present",
+    "MTA is a phenotype analysis; with no phenotype data there is nothing to analyze")
 
-  staIds <- if (hasSta) unique(status$analysisId[status$module == "sta"]) else numeric(0)
+  hasSta <- !is.null(status) && any(staModules %in% status$module)
+  checks <- vbo_check(checks, hasSta,
+    "SOA (Single Trial Analysis) has been run",
+    "mod_mtaLMMsolveApp.R blocks the run when there is no 'soa' (STA) stamp in status")
+
+  staIds <- if (hasSta) unique(status$analysisId[status$module %in% staModules]) else numeric(0)
 
   checks <- vbo_check(checks, hasSta && is.numeric(status$analysisId),
     "status$analysisId is numeric",
@@ -1608,7 +1617,7 @@ validate_use_case_mta <- function(object) {
 
   # One status row per sta analysisId, otherwise names<- errors and the
   # dropdown silently stays empty.
-  dupSta <- hasSta && (sum(status$module == "sta") != length(staIds))
+  dupSta <- hasSta && (sum(status$module %in% staModules) != length(staIds))
   checks <- vbo_check(checks, !dupSta,
     "no duplicate 'sta' status rows",
     "names(traitsMta) <- paste(analysisIdName, ...) errors on length mismatch")
@@ -1911,9 +1920,12 @@ VBO_USECASE_INFO <- list(
 #' @noRd
 VBO_FRIENDLY <- list(
   # ---- MTA -------------------------------------------------------------
-  "status contains a 'sta' row" = list(
-    meaning = "Single Trial Analysis has not been run on this object, so trial-combining analysis cannot start.",
-    action  = "Re-run the script with runSOA = TRUE so Single Trial Analysis is performed before export."),
+  "phenotypic data is present" = list(
+    meaning = "No phenotypic data was supplied, so there is nothing for MTA to analyze.",
+    action  = "Provide a phenotype file; MTA is a phenotype analysis and cannot run without one."),
+  "SOA (Single Trial Analysis) has been run" = list(
+    meaning = "Single Trial Analysis (SOA) has not run on this object, so trial-combining (MTA) cannot start.",
+    action  = "Provide phenotypic data so the script runs model-based QA and SOA automatically. If phenotypes are present but SOA still did not run, check the earlier log for the resMod/staLMM warning."),
   "status$analysisId is numeric" = list(
     meaning = "The analysis identifier is not a number, which the analysis stamp menu cannot read.",
     action  = "Re-generate the object with this script (it creates numeric analysis IDs); do not hand-edit the IDs."),
@@ -2232,7 +2244,7 @@ validate_bioflow_object <- function(object, verbose = TRUE, diagnosticsFile = NU
 #' @param requestId string indicating the analysis request id generated in EBS
 #' @param pedigreeMapping optional named list mapping Bioflow pedigree parameters to columns of `pedigreeFile`, e.g. `list(crossType = "entry", yearOfOrigin = "year")`. Only needed when auto-detection cannot resolve a column.
 #' @param deriveCrossType logical; when `pedigreeFile` has no crossType column, infer one from parent completeness so the F1 qa/qc module can run. Default TRUE.
-#' @param runSOA logical; run `cgiarPipeline::staLMM()` so the object arrives MTA-ready. Default TRUE. Set FALSE to export a pedigree/genotype-only object for the qa/qc use cases.
+#' @param runSOA logical or NULL; run model-based outlier detection (`cgiarPipeline::resMod`, written as a `qaMb` stamp) followed by Single Trial Analysis (`cgiarPipeline::staLMM`, written as a `soa` stamp) so the object arrives MTA-ready. Default NULL = auto: runs whenever phenotypic data is present. Set FALSE to export a pedigree/genotype-only object for the qa/qc use cases.
 #' @param validate logical; print the use-case readiness report. Default TRUE.
 #' @param diagnosticsFile optional path for the diagnostics JSON. When NULL it is written beside the RData as `<outputFile>.diagnostics.json`. The JSON reports, per use case (MTA, F1 qa/qc, Pedigree qa/qc), whether the file is READY plus, for each unmet requirement, a plain-language meaning and a concrete fix action aimed at the EBS engineer preparing the files.
 #'
@@ -2243,7 +2255,7 @@ validate_bioflow_object <- function(object, verbose = TRUE, diagnosticsFile = NU
 getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeFile = NULL,
                      traits = NULL, outputPath, outputFile = NULL, requestId = NULL,
                      pedigreeMapping = NULL, deriveCrossType = TRUE,
-                     runSOA = FALSE, validate = TRUE, diagnosticsFile = NULL) {
+                     runSOA = NULL, validate = TRUE, diagnosticsFile = NULL) {
 
   # Now we can use ensure_cran_packages since packages_verification.R has been sourced
   ensure_cran_packages(c("vcfR", "adegenet", "cli", "rlang", "remotes",
@@ -2259,6 +2271,12 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
 
   havePheno <- !is.null(phenotypeFile) && nzchar(phenotypeFile)
   haveGeno <- !is.null(genotypeFile) && nzchar(genotypeFile)
+
+  # runSOA controls model-based QA + Single Trial Analysis. Default (NULL) is
+  # "auto": run whenever phenotypic data is present. TRUE/FALSE force it.
+  if (is.null(runSOA)) {
+    runSOA <- havePheno
+  }
 
   if(havePheno) {
     analysisIdPheno <- round(as.numeric(Sys.time()), 0)
@@ -2363,6 +2381,22 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
       value = NA
     )
     row.names(modeling) <- traits
+
+    # --- empty pheno QA/QC stamp (the analysisId handed to resMod/staLMM)
+    # EBS performs the experimental-design, missingness and consistency checks
+    # upstream, so here we only record the stamp (a status row, no row-level
+    # modifications). resMod()/staLMM() filter modifications$pheno by this id;
+    # passing the qaRaw placeholder (whose rows are NA) would crash resMod on
+    # `mydata[as.numeric(row), ] <- NA`, so we use a dedicated empty stamp with
+    # no modification rows. Module 'qaConsistency' is one of the stamps Bioflow's
+    # model-based QA dropdown recognises.
+    analysisIdPhenoQA <- round(as.numeric(Sys.time()), 0) + 2
+    status <- rbind(status, data.frame(
+      module = "qaConsistency",
+      analysisId = analysisIdPhenoQA,
+      analysisIdName = "qa_ebs_consist",
+      stringsAsFactors = FALSE
+    ))
   }
   # --- data -> pedigree
   # Read the pedigree file when one is supplied. Every column of the file is
@@ -2520,9 +2554,98 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
   result$metadata      <- result$metadata[!vapply(result$metadata, is.null, logical(1))]
   result$modifications <- result$modifications[!vapply(result$modifications, is.null, logical(1))]
 
-  # --- Single Trial Analysis, so the object arrives MTA-ready
+  # --- Model-based outlier detection (qaMb), then Single Trial Analysis
+  # The updated cgiarPipeline::staLMM() returns NULL unless a 'qaMb' stamp
+  # exists in status, so SOA now requires model-based outlier detection to run
+  # first. This mimics Bioflow's qaSta "Model-Based Outlier Detection" step:
+  # cgiarPipeline::resMod() fits, per trait x environment, the SOA linear model
+  # and flags a record as an outlier when >= 2 of 3 criteria hold
+  # (Cook's distance > 4/N, |studentized residual| > 3.5, leverage > 2p/N).
+  # EBS performs the upstream pheno QA (experimental design / missingness /
+  # consistency) itself, so those stamps are not generated here; the existing
+  # qaRaw stamp (analysisIdPheno) is the pheno-QA analysisId passed downstream.
   if (isTRUE(runSOA)) {
-    result <- cgiarPipeline::staLMM(phenoDTfile = result, analysisId=analysisIdPheno,
+
+    # 1) Compute residual diagnostics and outlier flags for the mapped traits.
+    resModOut <- try(
+      cgiarPipeline::resMod(
+        phenoDTfile = result,
+        analysisId  = analysisIdPhenoQA,
+        trait       = traits,
+        genoUnit    = "designation",
+        addRes      = FALSE,
+        verbose     = FALSE
+      ),
+      silent = TRUE
+    )
+
+    if (inherits(resModOut, "try-error") || is.null(resModOut) || nrow(resModOut) == 0) {
+      cli::cli_warn(paste0(
+        "Model-based outlier detection (cgiarPipeline::resMod) produced no ",
+        "result; the qaMb stamp and SOA will be skipped. Detail: ",
+        if (inherits(resModOut, "try-error")) as.character(resModOut) else "empty result"
+      ))
+    } else {
+      # 2) Write the qaMb stamp exactly as Bioflow's qaSta module does:
+      #    - outlier rows go to modifications$pheno (module 'qaMb', reason
+      #      'outlierRes'); cookD/leverage thresholds go to modeling; a 'qaMb'
+      #      status row records the stamp.
+      analysisIdMb <- as.numeric(Sys.time())
+      tmpOut <- resModOut[which(resModOut$outlierFinal == "outlier"), , drop = FALSE]
+
+      if (nrow(tmpOut) > 0) {
+        modMb <- data.frame(
+          module     = "qaMb",
+          analysisId = analysisIdMb,
+          trait      = tmpOut[, "trait"],
+          reason     = "outlierRes",
+          row        = tmpOut[, "idRowR"],
+          value      = tmpOut[, "Observed"],
+          stringsAsFactors = FALSE
+        )
+        if (is.null(result$modifications$pheno)) {
+          result$modifications$pheno <- modMb
+        } else {
+          result$modifications$pheno <- rbind(
+            result$modifications$pheno, modMb[, colnames(result$modifications$pheno)]
+          )
+        }
+      }
+
+      # Per trait x environment thresholds (Cook's D = 4/N, leverage = 2p/N).
+      dfU <- resModOut[!duplicated(resModOut[, c("trait", "environment")]), , drop = FALSE]
+      modelingMb <- rbind(
+        data.frame(module = "qaMb", analysisId = analysisIdMb, trait = dfU$trait,
+                   environment = dfU$environment, parameter = "cookD",
+                   value = round(4 / dfU$N, 4), stringsAsFactors = FALSE),
+        data.frame(module = "qaMb", analysisId = analysisIdMb, trait = dfU$trait,
+                   environment = dfU$environment, parameter = "leverage",
+                   value = round((2 * dfU$p) / dfU$N, 4), stringsAsFactors = FALSE)
+      )
+      if (is.null(result$modeling)) {
+        result$modeling <- modelingMb
+      } else {
+        result$modeling <- rbind(result$modeling, modelingMb[, colnames(result$modeling)])
+      }
+
+      statusMb <- data.frame(module = "qaMb", analysisId = analysisIdMb,
+                             analysisIdName = "qa_ebs_mb", stringsAsFactors = FALSE)
+      result$status <- rbind(result$status, statusMb[, colnames(result$status)])
+
+      cli::cli_inform(paste0(
+        "Model-based outlier detection tagged ", nrow(tmpOut),
+        " record(s) as outliers across ", nrow(dfU),
+        " trait x environment combination(s); qaMb stamp ", analysisIdMb, " added."
+      ))
+    }
+
+    # 3) Single Trial Analysis (SOA). staLMM() requires a qaMb stamp and returns
+    #    NULL otherwise, so only run it when the qaMb step above succeeded, and
+    #    never overwrite a good object with a NULL/failed result.
+    haveQaMb <- !is.null(result$status) && "qaMb" %in% result$status$module
+    if (haveQaMb) {
+      resSta <- try(
+        cgiarPipeline::staLMM(phenoDTfile = result, analysisId=analysisIdPhenoQA,
                                     trait=traits,
                                     traitFamily = NULL,
                                     fixedTerm = NULL,
@@ -2530,7 +2653,24 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
                                     genoUnit = "designation",
                                     rowColRole = "spatial",
                                     verbose = "FALSE",
-                                    maxit = 35)
+                                    maxit = 35),
+        silent = TRUE
+      )
+      if (inherits(resSta, "try-error") || is.null(resSta)) {
+        cli::cli_warn(paste0(
+          "Single Trial Analysis (cgiarPipeline::staLMM) did not return a result; ",
+          "the object is kept without an SOA stamp. Detail: ",
+          if (inherits(resSta, "try-error")) as.character(resSta) else "staLMM returned NULL"
+        ))
+      } else {
+        result <- resSta
+      }
+    } else {
+      cli::cli_warn(paste0(
+        "No qaMb stamp present (model-based outlier detection did not run), ",
+        "so Single Trial Analysis was skipped."
+      ))
+    }
 
     # staLMM adds its own "sta" status row but leaves analysisIdName as NA, which
     # renders as "NA_<timestamp>" in the MTA stamp dropdown. Name it in place -

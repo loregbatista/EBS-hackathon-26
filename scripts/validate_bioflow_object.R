@@ -79,12 +79,21 @@ validate_use_case_mta <- function(object) {
   checks <- NULL
   status <- object$status
 
-  hasSta <- !is.null(status) && "sta" %in% status$module
-  checks <- vbo_check(checks, hasSta,
-    "status contains a 'sta' row",
-    "mod_mtaLMMsolveApp.R blocks the run when sum(status$module %in% 'sta') == 0")
+  # The STA step now stamps module "soa" (older objects used "sta").
+  staModules <- c("soa", "sta")
+  # MTA's real requirements: phenotypic data is present, and SOA (Single
+  # Occurrence/Trial Analysis) ran successfully on it.
+  hasPheno <- !is.null(object$data$pheno) && nrow(object$data$pheno) > 0
+  checks <- vbo_check(checks, hasPheno,
+    "phenotypic data is present",
+    "MTA is a phenotype analysis; with no phenotype data there is nothing to analyze")
 
-  staIds <- if (hasSta) unique(status$analysisId[status$module == "sta"]) else numeric(0)
+  hasSta <- !is.null(status) && any(staModules %in% status$module)
+  checks <- vbo_check(checks, hasSta,
+    "SOA (Single Trial Analysis) has been run",
+    "mod_mtaLMMsolveApp.R blocks the run when there is no 'soa' (STA) stamp in status")
+
+  staIds <- if (hasSta) unique(status$analysisId[status$module %in% staModules]) else numeric(0)
 
   checks <- vbo_check(checks, hasSta && is.numeric(status$analysisId),
     "status$analysisId is numeric",
@@ -92,7 +101,7 @@ validate_use_case_mta <- function(object) {
 
   # One status row per sta analysisId, otherwise names<- errors and the
   # dropdown silently stays empty.
-  dupSta <- hasSta && (sum(status$module == "sta") != length(staIds))
+  dupSta <- hasSta && (sum(status$module %in% staModules) != length(staIds))
   checks <- vbo_check(checks, !dupSta,
     "no duplicate 'sta' status rows",
     "names(traitsMta) <- paste(analysisIdName, ...) errors on length mismatch")
@@ -395,9 +404,12 @@ VBO_USECASE_INFO <- list(
 #' @noRd
 VBO_FRIENDLY <- list(
   # ---- MTA -------------------------------------------------------------
-  "status contains a 'sta' row" = list(
-    meaning = "Single Trial Analysis has not been run on this object, so trial-combining analysis cannot start.",
-    action  = "Re-run the script with runSOA = TRUE so Single Trial Analysis is performed before export."),
+  "phenotypic data is present" = list(
+    meaning = "No phenotypic data was supplied, so there is nothing for MTA to analyze.",
+    action  = "Provide a phenotype file; MTA is a phenotype analysis and cannot run without one."),
+  "SOA (Single Trial Analysis) has been run" = list(
+    meaning = "Single Trial Analysis (SOA) has not run on this object, so trial-combining (MTA) cannot start.",
+    action  = "Provide phenotypic data so the script runs model-based QA and SOA automatically. If phenotypes are present but SOA still did not run, check the earlier log for the resMod/staLMM warning."),
   "status$analysisId is numeric" = list(
     meaning = "The analysis identifier is not a number, which the analysis stamp menu cannot read.",
     action  = "Re-generate the object with this script (it creates numeric analysis IDs); do not hand-edit the IDs."),
