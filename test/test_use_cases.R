@@ -39,9 +39,19 @@ expect <- function(condition, what) {
 # ---------------------------------------------------------------------------
 cat("\n### Use-case readiness ###\n")
 report <- validate_bioflow_object(result, verbose = FALSE)
+# This fixture targets the genotype/pedigree qa/qc use cases and deliberately
+# does NOT run Single Trial Analysis (getBioflowRData is called with the default
+# runSOA = FALSE), so MTA cannot be ready here. Assert readiness only for the
+# qa/qc use cases; report MTA status for information without failing the run.
 for (nm in names(report)) {
-  ready <- isTRUE(attr(report[[nm]], "ready"))
-  expect(ready, paste0(nm, " is ready"))
+  ready    <- isTRUE(attr(report[[nm]], "ready"))
+  is_qaqc  <- grepl("gVerif|qaPed", nm)
+  if (is_qaqc) {
+    expect(ready, paste0(nm, " is ready"))
+  } else {
+    cat("  info ", nm, ": ", if (ready) "ready" else "not ready (STA not run in this fixture)",
+        "\n", sep = "")
+  }
   if (!ready) {
     bad <- report[[nm]][!report[[nm]]$ok, ]
     for (i in seq_len(nrow(bad))) {

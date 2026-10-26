@@ -59,6 +59,7 @@
 # Mirrors the vocabulary offered by bioflow/R/mod_getDataPed.R.
 PED_CANONICAL_PARAMS <- c(
   "designation",
+  "sample_id",
   "mother",
   "father",
   "crossType",
@@ -80,6 +81,8 @@ PED_HEADER_SYNONYMS <- list(
   designation  = c("designation", "germplasmname", "germplasm", "germplasmcode",
                    "line", "linename", "genotype", "genotypename", "entryname",
                    "accession", "accessionname"),
+  sample_id    = c("sampleid", "sample", "samplename", "samplecode",
+                   "dnasampleid", "sampledbid", "tissuesampleid", "sampleno"),
   mother       = c("mother", "mothername", "female", "femaleparent", "femalename",
                    "parent1", "parenta", "hybridparent1", "seedparent", "p1"),
   father       = c("father", "fathername", "male", "maleparent", "malename",
@@ -466,6 +469,70 @@ read_pedigree_file <- function(pedigreeFile,
   for (n in notes) cli::cli_inform(n)
 
   list(data = pedigreeData, metadata = pedigreeMetadata, notes = notes)
+}
+
+#' Align genotype individual names to the pedigree identifier space
+#'
+#' EBS genotype exports key the VCF samples by sample_id (sample_code), but
+#' Bioflow's F1 qa/qc matches parents by `designation` and Pedigree qa/qc
+#' matches designation/mother/father triplets by `designation`. When the
+#' pedigree provides a sample_id -> designation mapping, the parental samples in
+#' the genlight must therefore be renamed to their designation, while the F1
+#' progeny are kept under their sample_id (F1 qa/qc looks progeny up by
+#' sample_id, and sibling F1s can share a designation).
+#'
+#' This mirrors bioflow/R/mod_getDataGeno.R::translate_ind_names() so the object
+#' this script writes behaves the same as one prepared through the Bioflow UI.
+#' Orientation-aware and idempotent: names already in the designation space are
+#' left untouched, so a designation-keyed VCF, a sample_id-keyed VCF and a mixed
+#' VCF all come out correct.
+#'
+#' @param gl A genlight object (the loaded genotypes).
+#' @param pedigreeData data$pedigree, canonical column names.
+#' @return `gl` with parental individual names translated to designations.
+align_geno_to_pedigree <- function(gl, pedigreeData) {
+  if (!inherits(gl, "genlight")) return(gl)
+  if (is.null(pedigreeData) || !("sample_id" %in% colnames(pedigreeData)) ||
+      !("designation" %in% colnames(pedigreeData))) {
+    return(gl)
+  }
+
+  inds <- as.character(adegenet::indNames(gl))
+
+  sid   <- as.character(pedigreeData$sample_id)
+  desig <- as.character(pedigreeData$designation)
+
+  # crossType, if present, tells us which rows are F1 progeny (kept as sample_id).
+  isF1row <- if ("crossType" %in% colnames(pedigreeData)) {
+    toupper(as.character(pedigreeData$crossType)) == "F1"
+  } else {
+    rep(FALSE, nrow(pedigreeData))
+  }
+
+  # Map each genlight name (assumed sample_id) to its pedigree row.
+  row_idx <- match(inds, sid)
+
+  final <- inds
+  for (i in seq_along(inds)) {
+    r <- row_idx[i]
+    if (is.na(r)) next                                   # not a sample_id; leave as is
+    if (isTRUE(isF1row[r])) next                         # F1 progeny: keep sample_id
+    d <- desig[r]
+    if (!is.na(d) && nzchar(d) && !identical(inds[i], d)) {
+      final[i] <- d                                      # parent: sample_id -> designation
+    }
+  }
+
+  if (!identical(final, inds)) {
+    nTranslated <- sum(final != inds)
+    cli::cli_inform(paste0(
+      "Aligned ", nTranslated, " parental genotype sample(s) to their ",
+      "designation so F1/Pedigree qa/qc can match parents; F1 progeny kept ",
+      "under their sample_id."
+    ))
+    adegenet::indNames(gl) <- final
+  }
+  gl
 }
 
 #' Build the placeholder pedigree used when no pedigree file is supplied

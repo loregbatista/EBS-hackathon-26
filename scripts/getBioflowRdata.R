@@ -65,19 +65,21 @@
 #' @param deriveCrossType logical; when `pedigreeFile` has no crossType column, infer one from parent completeness so the F1 qa/qc module can run. Default TRUE.
 #' @param runSOA logical; run `cgiarPipeline::staLMM()` so the object arrives MTA-ready. Default TRUE. Set FALSE to export a pedigree/genotype-only object for the qa/qc use cases.
 #' @param validate logical; print the use-case readiness report. Default TRUE.
+#' @param diagnosticsFile optional path for the diagnostics JSON. When NULL it is written beside the RData as `<outputFile>.diagnostics.json`. The JSON reports, per use case (MTA, F1 qa/qc, Pedigree qa/qc), whether the file is READY plus, for each unmet requirement, a plain-language meaning and a concrete fix action aimed at the EBS engineer preparing the files.
 #'
-#' @return Invisibly, a list with `result` (the object written) and `file` (the
-#'   path it was written to).
+#' @return Invisibly, a list with `result` (the object written), `file` (the
+#'   path it was written to) and `diagnosticsFile` (the diagnostics JSON path).
 # -------------------------------------------------------------------------------------
 
 getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeFile = NULL,
                      traits = NULL, outputPath, outputFile = NULL, requestId = NULL,
                      pedigreeMapping = NULL, deriveCrossType = TRUE,
-                     runSOA = FALSE, validate = TRUE) {
+                     runSOA = FALSE, validate = TRUE, diagnosticsFile = NULL) {
 
   # Now we can use ensure_cran_packages since packages_verification.R has been sourced
   ensure_cran_packages(c("vcfR", "adegenet", "cli", "rlang", "remotes",
-                         "openssl", "stringr", "purrr", "glue", "Matrix"))
+                         "openssl", "stringr", "purrr", "glue", "Matrix",
+                         "jsonlite"))
   # Install if not cgiarPipelines and cgiarBase using remotes
   ensure_github_packages()
 
@@ -229,6 +231,15 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
 
 
     data_geno <- read_vcf(genotypeFile)
+
+    # EBS VCFs key samples by sample_id (sample_code), but F1 qa/qc matches
+    # parents by designation and Pedigree qa/qc matches designation/mother/father
+    # triplets by designation. Translate parental sample_ids to their designation
+    # (keeping F1 progeny under their sample_id) so both qa/qc modules can match
+    # the parents. No-op when the pedigree carries no sample_id mapping or the
+    # VCF is already designation-keyed.
+    data_geno <- align_geno_to_pedigree(data_geno, data_pedigree)
+
     genoPloidy <- max(adegenet::ploidy(data_geno))
 
     filter_1 <- list("maf", ">=", 0)
@@ -395,10 +406,26 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
   save(result, file = outFilePath)
   cat(paste0("Saved: ", outFilePath, "\n"))
 
+  # Diagnostics JSON: default beside the .RData as <outputFile>.diagnostics.json.
+  if (is.null(diagnosticsFile)) {
+    diagnosticsFile <- file.path(outputPath, paste0(outputFile, ".diagnostics.json"))
+  }
+  diagInputs <- list(
+    phenotypeFile = if (!is.null(phenotypeFile) && nzchar(phenotypeFile)) phenotypeFile else NA_character_,
+    pedigreeFile  = if (!is.null(pedigreeFile)  && nzchar(pedigreeFile))  pedigreeFile  else NA_character_,
+    genotypeFile  = if (!is.null(genotypeFile)  && nzchar(genotypeFile))  genotypeFile  else NA_character_,
+    outputFile    = outFilePath
+  )
+
   if (isTRUE(validate)) {
-    validate_bioflow_object(result)
+    validate_bioflow_object(result, diagnosticsFile = diagnosticsFile, inputs = diagInputs)
+  } else {
+    # Even when the console report is suppressed, still emit the JSON so the
+    # EBS engineer always gets a machine-readable diagnostics artifact.
+    validate_bioflow_object(result, verbose = FALSE,
+                            diagnosticsFile = diagnosticsFile, inputs = diagInputs)
   }
 
-  invisible(list(result = result, file = outFilePath))
+  invisible(list(result = result, file = outFilePath, diagnosticsFile = diagnosticsFile))
 
 } # end of staRData fxn
