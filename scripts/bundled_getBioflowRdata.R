@@ -1,6 +1,6 @@
 # Auto-generated file. Do not edit directly.
 # Source scripts are maintained in modular files under scripts/.
-# Generated on: 2026-10-26 17:06:20
+# Generated on: 2026-10-26 18:21:40
 
 # ---- BEGIN: packages_verification.R ----
 # CRAN packages the converter needs. vcfR/adegenet read and hold the markers;
@@ -2051,7 +2051,7 @@ vbo_decorate_checks <- function(tbl) {
 
 #' Build the diagnostics payload (a plain list ready for jsonlite::toJSON)
 #' @noRd
-vbo_json_payload <- function(useCases, ready, inputs = NULL) {
+vbo_json_payload <- function(useCases, ready, inputs = NULL, execChecks = NULL) {
   overallReady <- as.logical(ready)
   readyNames   <- names(ready)[overallReady]
 
@@ -2086,7 +2086,24 @@ vbo_json_payload <- function(useCases, ready, inputs = NULL) {
       checks_passed   = sum(tbl$ok),
       checks_total    = nrow(tbl),
       blocking_issues = unname(failed$requirement),
-      checks          = checksOut
+      checks          = checksOut,
+      execution_checks = {
+        er <- if (!is.null(execChecks)) execChecks[[nm]] else NULL
+        if (is.null(er) || nrow(er) == 0) {
+          list()
+        } else {
+          lapply(seq_len(nrow(er)), function(i) {
+            list(
+              check  = er$label[i],
+              id     = er$id[i],
+              ran    = isTRUE(er$ran[i]),
+              status = if (isTRUE(er$ran[i])) "RAN" else "FAILED",
+              note   = er$note[i],
+              detail = er$detail[i]
+            )
+          })
+        }
+      }
     )
   })
 
@@ -2127,6 +2144,273 @@ write_diagnostics_json <- function(payload, path) {
   invisible(path)
 }
 
+# ---------------------------------------------------------------------------
+# Execution checks: actually attempt the target Bioflow/cgiarPipeline function
+# for each use case and record whether it ran. These go beyond the static
+# readiness checks by exercising the real analysis engines.
+# ---------------------------------------------------------------------------
+
+#' Record one execution-check result
+#' @noRd
+vbo_exec <- function(records, id, label, ran, detail = "", note = "") {
+  rbind(records, data.frame(
+    id = id, label = label, ran = isTRUE(ran),
+    detail = detail, note = note, stringsAsFactors = FALSE
+  ))
+}
+
+#' Short one-line error text from a try-error / condition.
+#' @noRd
+vbo_err1 <- function(x) {
+  msg <- if (inherits(x, "try-error")) {
+    attr(x, "condition")$message
+  } else if (inherits(x, "condition")) {
+    conditionMessage(x)
+  } else as.character(x)
+  msg <- paste(msg, collapse = " ")
+  msg <- gsub("[[:space:]]+", " ", trimws(msg))
+  if (nchar(msg) > 300) paste0(substr(msg, 1, 300), " ...") else msg
+}
+
+#' UC1 (MOA): try metLMMsolver (main effects + GBLUP) and metASREML.
+#' Reports whether the heritability filter had to be bypassed for the model to
+#' keep any environment.
+#' @noRd
+vbo_exec_mta <- function(object) {
+  rec <- NULL
+  status <- object$status
+  soaId <- unique(status$analysisId[status$module %in% c("soa", "sta")])
+  if (length(soaId) == 0) {
+    return(vbo_exec(rec, "moa", "Run MOA", FALSE,
+                    "No SOA (soa) stamp present; MOA has no single-trial results to combine."))
+  }
+  soaId <- soaId[length(soaId)]
+  traitsSoa <- unique(object$predictions$trait[object$predictions$analysisId %in% soaId])
+  traitsSoa <- traitsSoa[!is.na(traitsSoa)]
+  if (length(traitsSoa) == 0) {
+    return(vbo_exec(rec, "moa", "Run MOA", FALSE, "No SOA predictions with a trait to analyze."))
+  }
+  trait1   <- traitsSoa[1]
+  genoId   <- unique(status$analysisId[status$module == "qaGeno"])
+  genoId   <- if (length(genoId)) genoId[length(genoId)] else NULL
+  haveGeno <- !is.null(object$data$geno)
+
+  # helper: run metLMMsolver with a given filter and (optional) GBLUP kernel;
+  # returns list(ok, npred, err)
+  tryMet <- function(bypass, gblup) {
+    args <- list(phenoDTfile = object, analysisId = soaId, trait = trait1,
+                 fixedTerm = list("1"), randomTerm = list("designation"),
+                 verbose = FALSE)
+    if (bypass) { args$heritLB <- 0; args$heritUB <- 1 }
+    if (gblup) {
+      args$expCovariates  <- list("genoA")
+      args$analysisIdGeno <- genoId
+      # metLMMsolver's marker-kernel path reads nPC["geno"]; pass 0 to use the
+      # full kernel (no PCA reduction), mirroring the Bioflow UI default.
+      args$nPC <- c(geno = 0)
+    } else {
+      args$expCovariates <- list("none")
+    }
+    out <- tryCatch(do.call(cgiarPipeline::metLMMsolver, args),
+                    error = function(e) e, warning = function(w) w)
+    if (inherits(out, "condition")) return(list(ok = FALSE, npred = 0, err = vbo_err1(out)))
+    np <- tryCatch(sum(out$status$module == "moaLmms"), error = function(e) 0)
+    list(ok = TRUE, npred = np, err = "")
+  }
+
+  # ---- main-effects LMMsolve: default filter, then bypass if needed --------
+  d  <- tryMet(bypass = FALSE, gblup = FALSE)
+  if (d$ok) {
+    rec <- vbo_exec(rec, "moa_lmms_main", "MOA main-effects (LMMsolve)", TRUE,
+                    "", "ran with default heritability filter [0.15, 0.95]")
+  } else {
+    b <- tryMet(bypass = TRUE, gblup = FALSE)
+    if (b$ok) {
+      rec <- vbo_exec(rec, "moa_lmms_main", "MOA main-effects (LMMsolve)", TRUE,
+                      paste0("Default filter failed/empty (", d$err, ")"),
+                      "ran ONLY after bypassing the heritability filter (heritLB=0, heritUB=1)")
+    } else {
+      rec <- vbo_exec(rec, "moa_lmms_main", "MOA main-effects (LMMsolve)", FALSE,
+                      paste0("default filter: ", d$err, " | bypassed filter: ", b$err))
+    }
+  }
+
+  # ---- GBLUP LMMsolve ------------------------------------------------------
+  if (haveGeno && !is.null(genoId)) {
+    d <- tryMet(bypass = FALSE, gblup = TRUE)
+    if (d$ok) {
+      rec <- vbo_exec(rec, "moa_lmms_gblup", "MOA GBLUP (LMMsolve)", TRUE, "",
+                      "ran with default heritability filter [0.15, 0.95]")
+    } else {
+      b <- tryMet(bypass = TRUE, gblup = TRUE)
+      if (b$ok) {
+        rec <- vbo_exec(rec, "moa_lmms_gblup", "MOA GBLUP (LMMsolve)", TRUE,
+                        paste0("Default filter failed/empty (", d$err, ")"),
+                        "ran ONLY after bypassing the heritability filter (heritLB=0, heritUB=1)")
+      } else {
+        rec <- vbo_exec(rec, "moa_lmms_gblup", "MOA GBLUP (LMMsolve)", FALSE,
+                        paste0("default filter: ", d$err, " | bypassed filter: ", b$err))
+      }
+    }
+  } else {
+    rec <- vbo_exec(rec, "moa_lmms_gblup", "MOA GBLUP (LMMsolve)", FALSE,
+                    "No genotype/qaGeno stamp available for a marker kernel.")
+  }
+
+  # ---- ASREML main effects (if asreml is installed) ------------------------
+  if (requireNamespace("asreml", quietly = TRUE)) {
+    # asreml must be attached: metASREML relies on asreml's family helpers
+    # (e.g. asr_gaussian) being on the search path, not just the namespace.
+    suppressWarnings(suppressMessages(try(attachNamespace("asreml"), silent = TRUE)))
+    # metASREML needs covMod/addG lists aligned to randomTerm ("none" = no kernel).
+    aOut <- tryCatch(
+      cgiarPipeline::metASREML(phenoDTfile = object, analysisId = soaId, trait = trait1,
+                               fixedTerm = list("1"), randomTerm = list("designation"),
+                               covMod = list("none"), addG = list("none"),
+                               heritLB = 0, heritUB = 1, verbose = FALSE),
+      error = function(e) e, warning = function(w) w
+    )
+    if (inherits(aOut, "condition")) {
+      rec <- vbo_exec(rec, "moa_asreml_main", "MOA main-effects (ASREML)", FALSE,
+                      vbo_err1(aOut))
+    } else {
+      rec <- vbo_exec(rec, "moa_asreml_main", "MOA main-effects (ASREML)", TRUE, "",
+                      "ran with heritability filter bypassed (heritLB=0, heritUB=1)")
+    }
+  } else {
+    rec <- vbo_exec(rec, "moa_asreml_main", "MOA main-effects (ASREML)", FALSE,
+                    "asreml package is not installed in this environment.")
+  }
+  rec
+}
+
+#' UC2 (F1 qa/qc): try cgiarPipeline::individualVerification end to end.
+#' @noRd
+vbo_exec_f1 <- function(object) {
+  rec <- NULL
+  qaGenoId <- as.character(object$status$analysisId[object$status$module == "qaGeno"])
+  if (length(qaGenoId) == 0) {
+    return(vbo_exec(rec, "f1_verif", "Run F1 qa/qc verification", FALSE,
+                    "No qaGeno stamp; individualVerification needs the imputed markers."))
+  }
+  qaGenoId <- qaGenoId[length(qaGenoId)]
+  ploidy <- tryCatch(as.numeric(object$metadata$geno$value[object$metadata$geno$parameter == "ploidity"]),
+                     error = function(e) 2)
+  if (length(ploidy) == 0 || is.na(ploidy[1])) ploidy <- 2
+  markers <- tryCatch(adegenet::locNames(object$data$geno_imp[[qaGenoId]]), error = function(e) NULL)
+
+  out <- tryCatch(
+    cgiarPipeline::individualVerification(
+      object = object,
+      analysisIdForGenoModifications = qaGenoId,
+      markersToBeUsed = markers,
+      colsForExpecGeno = c("mother", "father"),
+      ploidy = ploidy[1],
+      sc_filter = NULL, het = 10, matchThres = c(0.9, 0, 0.7)
+    ),
+    error = function(e) e, warning = function(w) w
+  )
+  if (inherits(out, "condition")) {
+    rec <- vbo_exec(rec, "f1_verif", "Run F1 qa/qc verification", FALSE, vbo_err1(out))
+  } else {
+    gv <- tryCatch(out$predictions[out$predictions$module == "gVerif", , drop = FALSE],
+                   error = function(e) NULL)
+    nPM <- if (!is.null(gv)) sum(gv$trait == "probMatch" & !is.na(gv$predictedValue)) else 0
+    rec <- vbo_exec(rec, "f1_verif", "Run F1 qa/qc verification", TRUE, "",
+                    paste0("individualVerification ran; probMatch computed for ", nPM, " F1(s)."))
+  }
+  rec
+}
+
+#' UC3 (Pedigree qa/qc): reproduce the qaPed computation path from
+#' bioflow/R/mod_qaPedApp.R (plot_impossible + plot_GRM) and report the exact
+#' point of failure if it cannot complete.
+#' @noRd
+vbo_exec_ped <- function(object) {
+  rec <- NULL
+
+  if (!requireNamespace("bioflow", quietly = TRUE)) {
+    return(vbo_exec(rec, "ped_qaped", "Run Pedigree qa/qc", FALSE,
+                    "bioflow package not installed (needed for InputInfo/CompareTriplets data)."))
+  }
+  # mclust::Mclust dispatches to mclustBIC, which must be on the search path.
+  suppressWarnings(suppressMessages(try(attachNamespace("mclust"), silent = TRUE)))
+  qaGenoId <- object$status$analysisId[object$status$module == "qaGeno"]
+  if (length(qaGenoId) == 0) {
+    return(vbo_exec(rec, "ped_qaped", "Run Pedigree qa/qc", FALSE, "No qaGeno stamp."))
+  }
+  qaGenoId <- qaGenoId[length(qaGenoId)]
+
+  res <- tryCatch({
+    geno_imp <- cgiarBase::resolveGenoStamp(object$data$geno_imp, qaGenoId)
+    glgeno   <- object$data$geno
+    gi       <- object$data$geno_imp[[geno_imp]]
+    # mimic modifyGeno: subset raw geno to imputed loci/inds
+    ln <- which(adegenet::locNames(glgeno) %in% adegenet::locNames(gi))
+    inn <- which(adegenet::indNames(glgeno) %in% adegenet::indNames(gi))
+    geno <- glgeno[inn, ln]
+    Markers <- as.data.frame(gi)
+
+    peddata <- object$data$pedigree
+    metaped <- object$metadata$pedigree
+
+    # --- Step 1: triplet comparison (plot_impossible) ---
+    uno <- data.frame(value = names(peddata))
+    names(peddata) <- metaped$parameter[which(metaped$value %in% uno$value == TRUE)]
+    resDMF <- lapply(split(peddata[, c("designation", "mother", "father")], 1:dim(peddata)[1]), unlist)
+    dimres <- unlist(lapply(resDMF, length))
+    gate <- (length(which(dimres == 3)) * 100) / dim(peddata)[1]
+    if (gate < 0.8) {
+      stop(paste0("triplet-completeness gate not met (", round(gate, 3),
+                  " < 0.8): too few designation/mother/father triplets to compare."))
+    }
+    geno_matrix <- as.matrix(glgeno)
+    nTrip <- sum(vapply(resDMF[which(dimres == 3)],
+                        function(idx) all(idx %in% rownames(geno_matrix)), logical(1)))
+    if (nTrip == 0) {
+      stop("no fully genotyped designation/mother/father triplet (every triplet would be 'NO GENO DATA').")
+    }
+
+    # --- Step 2: GRM + clustering (plot_GRM) ---
+    useful <- which(dimres == 3)
+    pedU <- peddata[useful, ]
+    # geno is a genlight (S4); convert to a numeric matrix before arithmetic.
+    genoMat <- as.matrix(geno)
+    ploidyFactor <- max(genoMat, na.rm = TRUE) / 2
+    G <- sommer::A.mat(genoMat - ploidyFactor)
+    resM <- lapply(split(pedU[, c("designation", "mother")], 1:dim(pedU)[1]), unlist)
+    resM <- lapply(resM, function(x) match(x, rownames(G)))
+    GLM_metric <- unlist(lapply(resM, function(x) G[x[1], x[2]]))
+    GLM_metric <- GLM_metric[!is.na(GLM_metric)]
+    if (length(GLM_metric) < 2) {
+      stop(paste0("only ", length(GLM_metric),
+                  " line-mother relationship value(s); mclust::Mclust(G=2) needs at least 2."))
+    }
+    fit <- mclust::Mclust(GLM_metric, G = 2, verbose = FALSE)
+    if (is.null(fit)) stop("mclust::Mclust(G = 2) failed to fit two components.")
+    list(nTrip = nTrip, nGLM = length(GLM_metric))
+  }, error = function(e) e, warning = function(w) w)
+
+  if (inherits(res, "condition")) {
+    rec <- vbo_exec(rec, "ped_qaped", "Run Pedigree qa/qc", FALSE, vbo_err1(res))
+  } else {
+    rec <- vbo_exec(rec, "ped_qaped", "Run Pedigree qa/qc", TRUE, "",
+                    paste0("qaPed computation ran: ", res$nTrip,
+                           " genotyped triplet(s), ", res$nGLM, " clustering value(s)."))
+  }
+  rec
+}
+
+#' Dispatch execution checks for all use cases.
+#' @noRd
+run_execution_checks <- function(object) {
+  list(
+    "MTA (Multi Trial Analysis)" = vbo_exec_mta(object),
+    "F1 qa/qc (gVerif)"          = vbo_exec_f1(object),
+    "Pedigree qa/qc (qaPed)"     = vbo_exec_ped(object)
+  )
+}
+
 #' Report whether a generated object can run the three EBS use cases
 #'
 #' @param object A Bioflow result object (the list saved as `result`).
@@ -2137,7 +2421,7 @@ write_diagnostics_json <- function(payload, path) {
 #' @param inputs Optional named list of input file paths recorded in the JSON.
 #' @return Invisibly, a named list of data.frames (one per use case), each with
 #'   `ok`, `requirement` and `detail` columns, plus a `ready` attribute.
-validate_bioflow_object <- function(object, verbose = TRUE, diagnosticsFile = NULL, inputs = NULL) {
+validate_bioflow_object <- function(object, verbose = TRUE, diagnosticsFile = NULL, inputs = NULL, runExecution = FALSE) {
 
   useCases <- list(
     "MTA (Multi Trial Analysis)" = validate_use_case_mta(object),
@@ -2147,6 +2431,12 @@ validate_bioflow_object <- function(object, verbose = TRUE, diagnosticsFile = NU
 
   ready <- vapply(useCases, function(x) all(x$ok), logical(1))
   for (nm in names(useCases)) attr(useCases[[nm]], "ready") <- ready[[nm]]
+
+  # Optionally attempt to actually run each use case's target function.
+  execChecks <- NULL
+  if (isTRUE(runExecution)) {
+    execChecks <- run_execution_checks(object)
+  }
 
   if (isTRUE(verbose)) {
     cat("\n=========================================================\n")
@@ -2166,11 +2456,30 @@ validate_bioflow_object <- function(object, verbose = TRUE, diagnosticsFile = NU
     cat("\n---------------------------------------------------------\n")
     cat("Summary: ", sum(ready), " of ", length(ready), " use case(s) ready\n", sep = "")
     cat("---------------------------------------------------------\n\n")
+
+    if (!is.null(execChecks)) {
+      cat("=========================================================\n")
+      cat(" Execution checks (did the target function actually run?)\n")
+      cat("=========================================================\n")
+      for (nm in names(execChecks)) {
+        er <- execChecks[[nm]]
+        cat("\n", nm, "\n", sep = "")
+        if (is.null(er) || nrow(er) == 0) { cat("  (no execution check)\n"); next }
+        for (i in seq_len(nrow(er))) {
+          mark <- if (er$ran[i]) "  RAN   " else "  FAILED"
+          cat(mark, " ", er$label[i], "\n", sep = "")
+          if (nzchar(er$note[i]))   cat("          note: ", er$note[i], "\n", sep = "")
+          if (!er$ran[i] && nzchar(er$detail[i])) cat("          why : ", er$detail[i], "\n", sep = "")
+          if (er$ran[i] && nzchar(er$detail[i]))  cat("          info: ", er$detail[i], "\n", sep = "")
+        }
+      }
+      cat("\n---------------------------------------------------------\n\n")
+    }
   }
 
   # Write the machine-readable, engineer-friendly diagnostics JSON.
   if (!is.null(diagnosticsFile) && nzchar(diagnosticsFile)) {
-    payload <- vbo_json_payload(useCases, ready, inputs = inputs)
+    payload <- vbo_json_payload(useCases, ready, inputs = inputs, execChecks = execChecks)
     write_diagnostics_json(payload, diagnosticsFile)
   }
 
@@ -2248,6 +2557,8 @@ validate_bioflow_object <- function(object, verbose = TRUE, diagnosticsFile = NU
 #' @param validate logical; print the use-case readiness report. Default TRUE.
 #' @param diagnosticsFile optional path for the diagnostics JSON. When NULL it is written beside the RData as `<outputFile>.diagnostics.json`. The JSON reports, per use case (MTA, F1 qa/qc, Pedigree qa/qc), whether the file is READY plus, for each unmet requirement, a plain-language meaning and a concrete fix action aimed at the EBS engineer preparing the files.
 #'
+#' @param runExecution logical; when TRUE, after validation the target Bioflow/cgiarPipeline analysis for each use case is actually attempted (MOA via metLMMsolver + metASREML, F1 via individualVerification, Pedigree qa/qc via the qaPed computation) and the outcome is added to the console log and the diagnostics JSON under `execution_checks`. Default FALSE. These run the real analysis engines, so they are slower.
+#'
 #' @return Invisibly, a list with `result` (the object written), `file` (the
 #'   path it was written to) and `diagnosticsFile` (the diagnostics JSON path).
 # -------------------------------------------------------------------------------------
@@ -2255,7 +2566,8 @@ validate_bioflow_object <- function(object, verbose = TRUE, diagnosticsFile = NU
 getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeFile = NULL,
                      traits = NULL, outputPath, outputFile = NULL, requestId = NULL,
                      pedigreeMapping = NULL, deriveCrossType = TRUE,
-                     runSOA = NULL, validate = TRUE, diagnosticsFile = NULL) {
+                     runSOA = NULL, validate = TRUE, diagnosticsFile = NULL,
+                     runExecution = FALSE) {
 
   # Now we can use ensure_cran_packages since packages_verification.R has been sourced
   ensure_cran_packages(c("vcfR", "adegenet", "cli", "rlang", "remotes",
@@ -2727,12 +3039,14 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
   )
 
   if (isTRUE(validate)) {
-    validate_bioflow_object(result, diagnosticsFile = diagnosticsFile, inputs = diagInputs)
+    validate_bioflow_object(result, diagnosticsFile = diagnosticsFile, inputs = diagInputs,
+                            runExecution = runExecution)
   } else {
     # Even when the console report is suppressed, still emit the JSON so the
     # EBS engineer always gets a machine-readable diagnostics artifact.
     validate_bioflow_object(result, verbose = FALSE,
-                            diagnosticsFile = diagnosticsFile, inputs = diagInputs)
+                            diagnosticsFile = diagnosticsFile, inputs = diagInputs,
+                            runExecution = runExecution)
   }
 
   invisible(list(result = result, file = outFilePath, diagnosticsFile = diagnosticsFile))

@@ -3,7 +3,7 @@
  directory: use_cases/1_MOA 
 ==================================================================
 
-Phenotypic QA/QC analysisId: 1793057194
+Phenotypic QA/QC analysisId: 1793060369
 Mapped 'entry' -> crossType.
 Mapped 'year' -> yearOfOrigin.
 Mapped 'plant_no' -> other.
@@ -13,7 +13,7 @@ Pedigree/phenotype designation overlap: 35 of 35 pedigree designation(s) also
 appear in the phenotype file.
 Read 37 pedigree row(s); 27 have both parents recorded.
 crossType == 'F1' on 27 row(s).
-Genotype QA/QC analysisId: 1793057196
+Genotype QA/QC analysisId: 1793060371
 Scanning file to determine attributes.
 File attributes:
   meta lines: 3
@@ -33,14 +33,23 @@ Character matrix gt created.
 All variants processed
 [1] "filter_processing..."
 Missing genotype calls 0
-No missing genotype calls to impute; modifications$geno_imp[['1793057196']]
+No missing genotype calls to impute; modifications$geno_imp[['1793060371']]
 recorded as NULL.
 'as(<dtTMatrix>, "dtCMatrix")' is deprecated.
 Use 'as(., "CsparseMatrix")' instead.
 See help("Deprecated") and help("Matrix-deprecated").
 Model-based outlier detection tagged 0 record(s) as outliers across 2 trait x
-environment combination(s); qaMb stamp 1793057196.06493 added.
+environment combination(s); qaMb stamp 1793060371.27899 added.
 Saved: use_cases/1_MOA/moa_input.RData
+Online License checked out Mon Oct 26 18:19:33 2026
+Loading the dataset and adding metadata.
+Building trait datasets.
+Fitting a model.
+Analyzing trait Plant_Height_cm
+ Using weights in the analysis. Residual variance will be fixed to 1. 
+✅ Convergence in 0 updates
+ Calculating standar errors for Plant_Height_cm designation predictions
+Wrapping the results.
 
 =========================================================
  Bioflow use-case readiness report
@@ -88,6 +97,28 @@ Saved: use_cases/1_MOA/moa_input.RData
 
 ---------------------------------------------------------
 Summary: 3 of 3 use case(s) ready
+---------------------------------------------------------
+
+=========================================================
+ Execution checks (did the target function actually run?)
+=========================================================
+
+MTA (Multi Trial Analysis)
+  RAN    MOA main-effects (LMMsolve)
+          note: ran with default heritability filter [0.15, 0.95]
+  RAN    MOA GBLUP (LMMsolve)
+          note: ran with default heritability filter [0.15, 0.95]
+  RAN    MOA main-effects (ASREML)
+          note: ran with heritability filter bypassed (heritLB=0, heritUB=1)
+
+F1 qa/qc (gVerif)
+  RAN    Run F1 qa/qc verification
+          note: individualVerification ran; probMatch computed for 27 F1(s).
+
+Pedigree qa/qc (qaPed)
+  RAN    Run Pedigree qa/qc
+          note: qaPed computation ran: 27 genotyped triplet(s), 27 clustering value(s).
+
 ---------------------------------------------------------
 
 Diagnostics written to: use_cases/1_MOA/moa_input.diagnostics.json

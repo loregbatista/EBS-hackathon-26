@@ -50,6 +50,27 @@ action, alongside the original `technical_detail`. A top-level `overall.verdict`
 summarises which use cases the file can drive. The path is returned as
 `out$diagnosticsFile`.
 
+### Execution checks (optional)
+
+Pass `runExecution = TRUE` to go beyond the static readiness checks and actually
+attempt each use case's target analysis on the generated object, recording
+whether it ran (and, on failure, the exact error) in both the console log and
+the diagnostics JSON (under `execution_checks` per use case):
+
+- **MOA**: runs `cgiarPipeline::metLMMsolver` for a main-effects model and a
+  GBLUP model, and `cgiarPipeline::metASREML` for main effects. For the
+  LMMsolve models it first tries the default heritability filter
+  `[0.15, 0.95]` and only bypasses it (`heritLB = 0, heritUB = 1`) if the
+  default keeps no environment, reporting which was needed.
+- **F1 qa/qc**: runs `cgiarPipeline::individualVerification` end to end.
+- **Pedigree qa/qc**: reproduces the qaPed computation (triplet comparison +
+  `sommer::A.mat` GRM + `mclust::Mclust` clustering) and states the exact step
+  that fails when the data cannot drive it.
+
+These run the real analysis engines (and `asreml` must be installed for the
+ASREML check), so they are slower than the readiness checks and are off by
+default.
+
 ### Production (Bioflow `main`) compatibility
 
 The EBS team loads these objects in the production Bioflow instance and runs

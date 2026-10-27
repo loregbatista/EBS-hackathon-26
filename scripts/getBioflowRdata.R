@@ -67,6 +67,8 @@
 #' @param validate logical; print the use-case readiness report. Default TRUE.
 #' @param diagnosticsFile optional path for the diagnostics JSON. When NULL it is written beside the RData as `<outputFile>.diagnostics.json`. The JSON reports, per use case (MTA, F1 qa/qc, Pedigree qa/qc), whether the file is READY plus, for each unmet requirement, a plain-language meaning and a concrete fix action aimed at the EBS engineer preparing the files.
 #'
+#' @param runExecution logical; when TRUE, after validation the target Bioflow/cgiarPipeline analysis for each use case is actually attempted (MOA via metLMMsolver + metASREML, F1 via individualVerification, Pedigree qa/qc via the qaPed computation) and the outcome is added to the console log and the diagnostics JSON under `execution_checks`. Default FALSE. These run the real analysis engines, so they are slower.
+#'
 #' @return Invisibly, a list with `result` (the object written), `file` (the
 #'   path it was written to) and `diagnosticsFile` (the diagnostics JSON path).
 # -------------------------------------------------------------------------------------
@@ -74,7 +76,8 @@
 getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeFile = NULL,
                      traits = NULL, outputPath, outputFile = NULL, requestId = NULL,
                      pedigreeMapping = NULL, deriveCrossType = TRUE,
-                     runSOA = NULL, validate = TRUE, diagnosticsFile = NULL) {
+                     runSOA = NULL, validate = TRUE, diagnosticsFile = NULL,
+                     runExecution = FALSE) {
 
   # Now we can use ensure_cran_packages since packages_verification.R has been sourced
   ensure_cran_packages(c("vcfR", "adegenet", "cli", "rlang", "remotes",
@@ -546,12 +549,14 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
   )
 
   if (isTRUE(validate)) {
-    validate_bioflow_object(result, diagnosticsFile = diagnosticsFile, inputs = diagInputs)
+    validate_bioflow_object(result, diagnosticsFile = diagnosticsFile, inputs = diagInputs,
+                            runExecution = runExecution)
   } else {
     # Even when the console report is suppressed, still emit the JSON so the
     # EBS engineer always gets a machine-readable diagnostics artifact.
     validate_bioflow_object(result, verbose = FALSE,
-                            diagnosticsFile = diagnosticsFile, inputs = diagInputs)
+                            diagnosticsFile = diagnosticsFile, inputs = diagInputs,
+                            runExecution = runExecution)
   }
 
   invisible(list(result = result, file = outFilePath, diagnosticsFile = diagnosticsFile))

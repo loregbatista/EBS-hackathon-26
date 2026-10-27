@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "generated_at": "2026-10-26T17:26:37-0600",
+  "generated_at": "2026-10-26T18:19:34-0600",
   "audience": "EBS software engineers preparing Bioflow input files",
   "inputs": {
     "phenotypeFile": null,
@@ -111,6 +111,16 @@
           "how_to_fix": "Provide phenotype data spanning at least two environments (occurrences).",
           "technical_detail": "found 0; mod_mtaLMMsolveApp.R zeroes any env x trait cell <= 1"
         }
+      ],
+      "execution_checks": [
+        {
+          "check": "Run MOA",
+          "id": "moa",
+          "ran": false,
+          "status": "FAILED",
+          "note": "",
+          "detail": "No SOA (soa) stamp present; MOA has no single-trial results to combine."
+        }
       ]
     },
     {
@@ -208,6 +218,16 @@
           "how_to_fix": "",
           "technical_detail": "found 10; crossVerification returns NA probMatch below min_markers = 8"
         }
+      ],
+      "execution_checks": [
+        {
+          "check": "Run F1 qa/qc verification",
+          "id": "f1_verif",
+          "ran": true,
+          "status": "RAN",
+          "note": "individualVerification ran; probMatch computed for 8 F1(s).",
+          "detail": ""
+        }
       ]
     },
     {
@@ -290,6 +310,16 @@
           "what_it_means": "Too few pedigree rows list a designation, mother and father together for the comparison to run.",
           "how_to_fix": "",
           "technical_detail": "8 of 14 row(s) have designation, mother and father all present; plot_impossible() takes the 'Not enough matching information' branch otherwise"
+        }
+      ],
+      "execution_checks": [
+        {
+          "check": "Run Pedigree qa/qc",
+          "id": "ped_qaped",
+          "ran": false,
+          "status": "FAILED",
+          "note": "",
+          "detail": "no fully genotyped designation/mother/father triplet (every triplet would be 'NO GENO DATA')."
         }
       ]
     }

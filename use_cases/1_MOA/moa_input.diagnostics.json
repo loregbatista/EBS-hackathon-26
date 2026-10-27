@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "generated_at": "2026-10-26T17:26:37-0600",
+  "generated_at": "2026-10-26T18:19:34-0600",
   "audience": "EBS software engineers preparing Bioflow input files",
   "inputs": {
     "phenotypeFile": "use_cases/1_MOA/coherent_pheno.csv",
@@ -111,6 +111,32 @@
           "how_to_fix": "",
           "technical_detail": "found 2; mod_mtaLMMsolveApp.R zeroes any env x trait cell <= 1"
         }
+      ],
+      "execution_checks": [
+        {
+          "check": "MOA main-effects (LMMsolve)",
+          "id": "moa_lmms_main",
+          "ran": true,
+          "status": "RAN",
+          "note": "ran with default heritability filter [0.15, 0.95]",
+          "detail": ""
+        },
+        {
+          "check": "MOA GBLUP (LMMsolve)",
+          "id": "moa_lmms_gblup",
+          "ran": true,
+          "status": "RAN",
+          "note": "ran with default heritability filter [0.15, 0.95]",
+          "detail": ""
+        },
+        {
+          "check": "MOA main-effects (ASREML)",
+          "id": "moa_asreml_main",
+          "ran": true,
+          "status": "RAN",
+          "note": "ran with heritability filter bypassed (heritLB=0, heritUB=1)",
+          "detail": ""
+        }
       ]
     },
     {
@@ -208,6 +234,16 @@
           "how_to_fix": "",
           "technical_detail": "found 120; crossVerification returns NA probMatch below min_markers = 8"
         }
+      ],
+      "execution_checks": [
+        {
+          "check": "Run F1 qa/qc verification",
+          "id": "f1_verif",
+          "ran": true,
+          "status": "RAN",
+          "note": "individualVerification ran; probMatch computed for 27 F1(s).",
+          "detail": ""
+        }
       ]
     },
     {
@@ -290,6 +326,16 @@
           "what_it_means": "Too few pedigree rows list a designation, mother and father together for the comparison to run.",
           "how_to_fix": "",
           "technical_detail": "27 of 37 row(s) have designation, mother and father all present; plot_impossible() takes the 'Not enough matching information' branch otherwise"
+        }
+      ],
+      "execution_checks": [
+        {
+          "check": "Run Pedigree qa/qc",
+          "id": "ped_qaped",
+          "ran": true,
+          "status": "RAN",
+          "note": "qaPed computation ran: 27 genotyped triplet(s), 27 clustering value(s).",
+          "detail": ""
         }
       ]
     }

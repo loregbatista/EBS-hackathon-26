@@ -8,7 +8,7 @@ Mapped 'year' -> yearOfOrigin.
 Carried 1 additional pedigree column(s) through to the R object: entry.
 Read 14 pedigree row(s); 8 have both parents recorded.
 crossType == 'F1' on 8 row(s).
-Genotype QA/QC analysisId: 1793057198
+Genotype QA/QC analysisId: 1793060376
 Scanning file to determine attributes.
 File attributes:
   meta lines: 1
@@ -90,6 +90,24 @@ Saved: use_cases/2_F1_qaqc/f1_qaqc_input.RData
 
 ---------------------------------------------------------
 Summary: 1 of 3 use case(s) ready
+---------------------------------------------------------
+
+=========================================================
+ Execution checks (did the target function actually run?)
+=========================================================
+
+MTA (Multi Trial Analysis)
+  FAILED Run MOA
+          why : No SOA (soa) stamp present; MOA has no single-trial results to combine.
+
+F1 qa/qc (gVerif)
+  RAN    Run F1 qa/qc verification
+          note: individualVerification ran; probMatch computed for 8 F1(s).
+
+Pedigree qa/qc (qaPed)
+  FAILED Run Pedigree qa/qc
+          why : no fully genotyped designation/mother/father triplet (every triplet would be 'NO GENO DATA').
+
 ---------------------------------------------------------
 
 Diagnostics written to: use_cases/2_F1_qaqc/f1_qaqc_input.diagnostics.json

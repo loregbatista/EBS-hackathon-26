@@ -8,7 +8,7 @@ Mapped 'year' -> yearOfOrigin.
 Carried 1 additional pedigree column(s) through to the R object: entry.
 Read 14 pedigree row(s); 8 have both parents recorded.
 crossType == 'F1' on 0 row(s).
-Genotype QA/QC analysisId: 1793057199
+Genotype QA/QC analysisId: 1793060376
 Scanning file to determine attributes.
 File attributes:
   meta lines: 1
@@ -31,6 +31,7 @@ qa/qc can match parents; F1 progeny kept under their sample_id.
 [1] "filter_processing..."
 Missing genotype calls 10
 Saved: use_cases/3_Pedigree_qaqc/pedigree_qaqc_input.RData
+Imputing markers with mean value
 
 =========================================================
  Bioflow use-case readiness report
@@ -86,6 +87,24 @@ Saved: use_cases/3_Pedigree_qaqc/pedigree_qaqc_input.RData
 
 ---------------------------------------------------------
 Summary: 1 of 3 use case(s) ready
+---------------------------------------------------------
+
+=========================================================
+ Execution checks (did the target function actually run?)
+=========================================================
+
+MTA (Multi Trial Analysis)
+  FAILED Run MOA
+          why : No SOA (soa) stamp present; MOA has no single-trial results to combine.
+
+F1 qa/qc (gVerif)
+  FAILED Run F1 qa/qc verification
+          why : To run the F1 qa/qc module the crossType column in the pedigree data needs to indicate which individuals are F1s to be evaluated
+
+Pedigree qa/qc (qaPed)
+  RAN    Run Pedigree qa/qc
+          note: qaPed computation ran: 8 genotyped triplet(s), 8 clustering value(s).
+
 ---------------------------------------------------------
 
 Diagnostics written to:
