@@ -69,6 +69,10 @@
 #'
 #' @param runExecution logical; when TRUE, after validation the target Bioflow/cgiarPipeline analysis for each use case is actually attempted (MOA via metLMMsolver + metASREML, F1 via individualVerification, Pedigree qa/qc via the qaPed computation) and the outcome is added to the console log and the diagnostics JSON under `execution_checks`. Default FALSE. These run the real analysis engines, so they are slower.
 #'
+#' @param useBP logical master opt-in switch for automatic TPP (Target Product Profile) population from the phenotype `bpid`/`msid` columns. Default FALSE. When FALSE the script generates the RData exactly as before and never reads `BP_file` or `TR_mapping_file`, never populating any TPP information, regardless of whether the phenotype data carries `bpid`/`msid`. When TRUE the script requires usable `bpid` information (the `bpid` column present with at least one non-NA value) plus two readable file arguments, and is fail-fast: if any precondition is unmet it stops WITHOUT writing any RData file and records a diagnostic in the diagnostics JSON.
+#' @param BP_file NULL or string giving the FULL path (including filename) to the sensitive breeding-portal TPP file (`TPP_traits_for_Bioflow.csv`, held only by the EBS team under `PAM_module/TPP_examples/`). Used verbatim. Read only when `useBP = TRUE` and the phenotype data has usable `bpid` information; required (non-NULL and readable) in that case. Default NULL.
+#' @param TR_mapping_file NULL or string giving the FILENAME ONLY of the trait-mapping file (e.g. `"variable_tr_mapping.csv"`, columns `ebs_variable_abbrev` -> `bp_tr_id`). Resolved by the script as `file.path(dirname(phenotypeFile), TR_mapping_file)`, so it must sit in the SAME directory as the phenotype/genotype/pedigree inputs. Read only when `useBP = TRUE` and the phenotype data has usable `bpid` information; required (resolvable and readable) in that case. Default NULL.
+#'
 #' @return Invisibly, a list with `result` (the object written), `file` (the
 #'   path it was written to) and `diagnosticsFile` (the diagnostics JSON path).
 # -------------------------------------------------------------------------------------
@@ -77,7 +81,8 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
                      traits = NULL, outputPath, outputFile = NULL, requestId = NULL,
                      pedigreeMapping = NULL, deriveCrossType = TRUE,
                      runSOA = NULL, validate = TRUE, diagnosticsFile = NULL,
-                     runExecution = FALSE) {
+                     runExecution = FALSE,
+                     useBP = FALSE, BP_file = NULL, TR_mapping_file = NULL) {
 
   # Now we can use ensure_cran_packages since packages_verification.R has been sourced
   ensure_cran_packages(c("vcfR", "adegenet", "cli", "rlang", "remotes",
@@ -98,6 +103,72 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
   # "auto": run whenever phenotypic data is present. TRUE/FALSE force it.
   if (is.null(runSOA)) {
     runSOA <- havePheno
+  }
+
+  # --------------------------------------------------------------------------
+  # Opt-in TPP population gate (Requirement 3, spec tpp-review Task 5).
+  #
+  # Evaluated BEFORE any RData is built or written so that a gating failure is
+  # genuinely fail-fast and side-effect-free: on any STOP branch NO RData file
+  # is written, a diagnostic is recorded in the diagnostics JSON, and the
+  # function stops. When useBP = FALSE this is a zero-cost no-op (no files are
+  # read) and the RData is generated exactly as before.
+  #
+  # `tpp_gate_decision()` / `tpp_has_usable_bpid()` /
+  # `write_gating_diagnostics_json()` live in scripts/tpp_gating_helpers.R
+  # (bundled before this file). The decision is retained in `tppGate` and
+  # consumed at the population hand-off point further below.
+  tppGate <- NULL
+  if (isTRUE(useBP)) {
+    # Lightweight raw read solely for the "usable bpid" check. The main pheno
+    # read below is unchanged; this does not alter it. We only read when the
+    # user has opted in, so the useBP = FALSE path reads nothing.
+    gatePheno <- if (havePheno) {
+      tryCatch(
+        read.csv(phenotypeFile, encoding = "utf-8", check.names = FALSE),
+        error = function(e) NULL
+      )
+    } else {
+      NULL
+    }
+
+    tppGate <- tpp_gate_decision(
+      useBP           = useBP,
+      data_pheno      = gatePheno,
+      phenotypeFile   = phenotypeFile,
+      BP_file         = BP_file,
+      TR_mapping_file = TR_mapping_file
+    )
+
+    if (!isTRUE(tppGate$proceed)) {
+      # Fail-fast STOP: write NO RData. Record the gating failure in a
+      # diagnostics JSON at the same path the normal diagnostics would use.
+      gatingDiagFile <- diagnosticsFile
+      if (is.null(gatingDiagFile) || !nzchar(gatingDiagFile)) {
+        gatingBase <- if (!is.null(outputFile) && nzchar(outputFile)) {
+          outputFile
+        } else {
+          "tpp_gating_failure"
+        }
+        gatingDiagFile <- file.path(outputPath, paste0(gatingBase, ".diagnostics.json"))
+      }
+      if (!dir.exists(outputPath)) {
+        dir.create(outputPath, recursive = TRUE)
+      }
+      gatingInputs <- list(
+        phenotypeFile = if (!is.null(phenotypeFile) && nzchar(phenotypeFile)) phenotypeFile else NA_character_,
+        BP_file       = if (!is.null(BP_file) && nzchar(as.character(BP_file)[1L])) BP_file else NA_character_,
+        TR_mapping_file = if (!is.null(TR_mapping_file) && nzchar(as.character(TR_mapping_file)[1L])) TR_mapping_file else NA_character_
+      )
+      write_gating_diagnostics_json(tppGate, gatingDiagFile, inputs = gatingInputs)
+      stop(
+        sprintf(
+          "TPP population gate failed (Requirement %s); no RData written. %s See diagnostics: %s",
+          tppGate$requirement, tppGate$reason, gatingDiagFile
+        ),
+        call. = FALSE
+      )
+    }
   }
 
   if(havePheno) {
@@ -517,6 +588,157 @@ getBioflowRData <- function(phenotypeFile = NULL, pedigreeFile = NULL, genotypeF
     if (!is.null(result$predictions) && !"effectType" %in% colnames(result$predictions)) {
       result$predictions$effectType <- NA_character_
     }
+  }
+
+  # --------------------------------------------------------------------------
+  # TPP population hand-off (Requirement 3.7 -> Requirements 4 & 5).
+  #
+  # Reached only when the opt-in gate passed with populate = TRUE (useBP = TRUE,
+  # usable bpid, and both BP_file + TR_mapping_file readable). At this point the
+  # `result` object is fully assembled, so this is where automatic TPP
+  # population plugs in. Tasks 6 and 7 implement the actual build of
+  # `result$data$TPP` / `result$metadata$TPP`:
+  #   * Task 6 - full path  (a record carries BOTH bpid AND msid)
+  #   * Task 7 - bpid-only path (msid empty/absent across rows) + skip path
+  #
+  # Everything the build step needs is prepared here and left in `tppPopInputs`:
+  #   - the loaded TPP file (BP_file) via read_tpp_file()
+  #   - the loaded TR mapping via read_tr_mapping() (resolved path from the gate)
+  #   - the BP-matched TPP rows for this phenotype's bpid via match_bp()
+  # These reuse the Task 4 ingestion helpers (scripts/tpp_population_helpers.R).
+  tppPopInputs <- NULL
+  if (!is.null(tppGate) && isTRUE(tppGate$populate)) {
+    tpp_data    <- read_tpp_file(tppGate$bp_file)
+    tr_mapping  <- read_tr_mapping(tppGate$tr_mapping_path)
+
+    # The gate guaranteed usable bpid; take the first non-NA bpid as the key.
+    pheno_bpid  <- if (havePheno && "bpid" %in% names(data_pheno)) data_pheno$bpid else NULL
+    matched_bp  <- match_bp(tpp_data, pheno_bpid)
+
+    tppPopInputs <- list(
+      tpp_data   = tpp_data,    # full TPP file (character columns)
+      tr_mapping = tr_mapping,  # resolver list from read_tr_mapping()
+      matched_bp = matched_bp,  # TPP rows whose normalized BPId matches the pheno bpid
+      bp_file    = tppGate$bp_file,
+      tr_mapping_path = tppGate$tr_mapping_path
+    )
+
+    cli::cli_inform(paste0(
+      "useBP gate passed: loaded TPP file (", nrow(tpp_data), " rows), ",
+      "TR mapping (", nrow(tr_mapping$mapping), " entries), matched ",
+      nrow(matched_bp), " TPP row(s) for the phenotype bpid."
+    ))
+
+    # >>> POPULATION HAND-OFF POINT <<<
+    # Build result$data$TPP[[tpp_id]] + result$metadata$TPP[[tpp_id]] here,
+    # BEFORE the RData is saved below, reusing the Task 6 build helpers
+    # (scripts/tpp_build_helpers.R). Diagnostics from skip branches are
+    # accumulated in `tppPopDiagnostics` and surfaced on the console; the
+    # diagnostics JSON itself is written by validate_bioflow_object() below.
+    tppPopDiagnostics <- list()
+
+    # Pheno designations drive the exact-match check auto-mapping (Req 4.7/4.8).
+    pheno_designations <- if (havePheno && "germplasmName" %in% names(data_pheno)) {
+      unique(as.character(data_pheno$germplasmName))
+    } else {
+      character(0)
+    }
+
+    # Distinguish records carrying a non-empty msid (full path, Task 6 /
+    # Requirement 4) from the msid-empty case (bpid-only path, Task 7 /
+    # Requirement 5). A record is on the full path when it has a usable bpid AND
+    # a non-empty msid. The TPP file is tidy on traits, so we drive population by
+    # the DISTINCT non-empty msid values present in the pheno data.
+    pheno_msid <- if (havePheno && "msid" %in% names(data_pheno)) {
+      trimws(as.character(data_pheno$msid))
+    } else {
+      character(0)
+    }
+    full_path_msids <- unique(pheno_msid[!is.na(pheno_msid) & nzchar(pheno_msid)])
+
+    if (length(full_path_msids) > 0L) {
+      # ---- FULL PATH (Requirement 4): both bpid and msid present -------------
+      for (ms in full_path_msids) {
+        built <- populate_tpp_full_path(
+          tpp_data           = tpp_data,
+          tr_mapping         = tr_mapping,
+          msid               = ms,
+          pheno_designations = pheno_designations
+        )
+
+        if (identical(built$status, "populated")) {
+          if (is.null(result$data))     result$data     <- list()
+          if (is.null(result$metadata)) result$metadata <- list()
+          if (is.null(result$data$TPP))     result$data$TPP     <- list()
+          if (is.null(result$metadata$TPP)) result$metadata$TPP <- list()
+
+          result$data$TPP[[built$tpp_id]]     <- built$data
+          result$metadata$TPP[[built$tpp_id]] <- built$metadata
+
+          cli::cli_inform(paste0(
+            "TPP population (full path): msid '", ms, "' -> ", built$tpp_id,
+            " (", nrow(built$metadata$traits), " mapped trait(s))."
+          ))
+        } else {
+          # Requirement 4.2 / 4.3: skip, leave the object unchanged for this
+          # record, and record the diagnostic. (status "no_match" or "not_1to1")
+          tppPopDiagnostics[[length(tppPopDiagnostics) + 1L]] <- list(
+            msid       = ms,
+            status     = built$status,
+            diagnostic = built$diagnostic
+          )
+          cli::cli_warn(built$diagnostic)
+        }
+      }
+    } else {
+      # ---- bpid-only path (Requirement 5): msid empty/absent across rows -----
+      # No single market segment to locate one TPP by, so populate EVERY distinct
+      # TPP under the matched BP, retaining ALL environments for every trait (no
+      # subsetting -> build_tpp_metadata emits env_filters = NULL). The gate
+      # guaranteed usable bpid; `pheno_bpid` is the pheno bpid column.
+      built <- populate_tpp_bpid_only(
+        tpp_data           = tpp_data,
+        tr_mapping         = tr_mapping,
+        bpid               = pheno_bpid,
+        pheno_designations = pheno_designations
+      )
+
+      if (identical(built$status, "populated")) {
+        if (is.null(result$data))     result$data     <- list()
+        if (is.null(result$metadata)) result$metadata <- list()
+        if (is.null(result$data$TPP))     result$data$TPP     <- list()
+        if (is.null(result$metadata$TPP)) result$metadata$TPP <- list()
+
+        for (tpp_code in names(built$tpps)) {
+          entry <- built$tpps[[tpp_code]]
+          result$data$TPP[[entry$tpp_id]]     <- entry$data
+          result$metadata$TPP[[entry$tpp_id]] <- entry$metadata
+
+          cli::cli_inform(paste0(
+            "TPP population (bpid-only): ", entry$tpp_id, " (",
+            nrow(entry$metadata$traits), " mapped trait(s), all environments retained)."
+          ))
+        }
+
+        cli::cli_inform(paste0(
+          "TPP population (bpid-only): populated ", length(built$tpp_codes),
+          " distinct TPP(s) under the matched BP (", 
+          paste(built$tpp_codes, collapse = ", "), ")."
+        ))
+      } else {
+        # Requirement 5.2 / 5.4: no BP rows -> skip, generate the RData WITHOUT
+        # TPP population, record the diagnostic. status "no_bp_match".
+        tppPopDiagnostics[[length(tppPopDiagnostics) + 1L]] <- list(
+          msid       = NA_character_,
+          status     = built$status,
+          diagnostic = built$diagnostic
+        )
+        cli::cli_warn(built$diagnostic)
+      }
+    }
+
+    # Retain the accumulated diagnostics for downstream reporting / tests.
+    attr(tppPopInputs, "tpp_population_diagnostics") <- tppPopDiagnostics
   }
 
   # check if folder exist or not

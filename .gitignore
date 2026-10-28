@@ -14,3 +14,9 @@ test/*.RData
 
 # Diagnostics JSON generated alongside the RData export
 *.diagnostics.json
+# Sensitive breeding-portal TPP file (tpp-review Req 7.1/7.2). The EBS RData
+# script is the sole code path allowed to READ it, but it is supplied at
+# runtime via the BP_file argument (an absolute path) and must never be
+# committed into or shipped with this repository.
+TPP_traits_for_Bioflow.csv
+**/TPP_traits_for_Bioflow.csv

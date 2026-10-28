@@ -4,6 +4,10 @@ bundle_bioflow_scripts <- function(
     "read_geno_functions.R",
     "read_pedigree_functions.R",
     "validate_bioflow_object.R",
+    "tpp_id_helpers.R",
+    "tpp_population_helpers.R",
+    "tpp_build_helpers.R",
+    "tpp_gating_helpers.R",
     "getBioflowRdata.R"
   ),
   scripts_dir = "scripts",

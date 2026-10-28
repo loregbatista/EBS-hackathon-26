@@ -228,6 +228,80 @@ genotyped will not).
 The readiness report (and the diagnostics JSON) report these overlaps as counts,
 so a mismatch shows up at export time rather than as an empty dashboard.
 
+### TPP auto-population (`useBP`)
+
+The script can auto-populate **Target Product Profile (TPP)** information into
+the generated object so that Bioflow's Review TPPs module and MTA receive a TPP
+object structurally identical to one produced by Bioflow's interactive TPP
+Excel upload. Population reads the breeding portal and writes `data$TPP[[id]]`
+(the standardized trait sheet) and `metadata$TPP[[id]]` (traits incl.
+`trait_id`, environment filters, scale validations, per-trait checks).
+
+TPP population is **opt-in and fail-fast**. `getBioflowRData()` takes three
+arguments:
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `useBP` | `FALSE` | Master switch. `FALSE` keeps today's behaviour: no file reads, no TPP population. |
+| `BP_file` | `NULL` | **Full path including filename** to the sensitive breeding-portal TPP file (`TPP_traits_for_Bioflow.csv`). |
+| `TR_mapping_file` | `NULL` | **Filename only**, resolved in the phenotype directory as `file.path(dirname(phenotypeFile), TR_mapping_file)`. Maps pheno variable abbreviations to TR_Ids (`variable_tr_mapping.csv`). |
+
+**Usable-bpid rule.** Population requires a *usable* breeding-pipeline id: the
+phenotype data must have a `bpid` column with **at least one non-NA `bpid`
+value**. A market-segment id (`msid`) alone is neither sufficient nor required.
+
+**Gating (fail-fast, side-effect-free on failure).** Before any file is read or
+any object is built:
+
+- `useBP = FALSE` → generate the RData as today; no TPP population, no file reads.
+- `useBP = TRUE` **and** no usable bpid → **stop**, write **no** RData, record a
+  diagnostic.
+- `useBP = TRUE`, usable bpid, but `BP_file` is `NULL`/unreadable → **stop**,
+  write **no** RData, record a diagnostic.
+- `useBP = TRUE`, usable bpid, but `TR_mapping_file` is `NULL`/unresolvable →
+  **stop**, write **no** RData, record a diagnostic.
+- Otherwise → proceed to population.
+
+Gating-failure entries are written into the same diagnostics JSON described
+above.
+
+**Full path vs bpid-only population.** Once the gate passes:
+
+- **Full path** (both `bpid` and a non-empty `msid` present): locate the single
+  TPP via `msid` → `MSId` (exactly one match; 0 or >1 matches are skipped with a
+  diagnostic), and build that one TPP. The env set per trait is every occurrence
+  mapped to that `msid` — the full set — so no environment subsetting is stored.
+- **bpid-only path** (`msid` empty/absent across all rows): populate **every**
+  distinct TPP grouped under the matched BP, retaining **all** environments for
+  every trait (no subsetting). No BP match → a diagnostic plus an RData without
+  TPP population.
+
+BP/MS/TR ids are matched through a shared `normalize_id` helper so that coded
+and raw forms (e.g. `DBP0003`, `BP00003`, `3`) reconcile.
+
+```r
+out <- getBioflowRData(
+  phenotypeFile   = "use_cases/1_MOA/bioflow_phenotype_data_MOA.csv",
+  pedigreeFile    = NULL,
+  genotypeFile    = NULL,
+  traits          = c("WH_PH_M_CM", "GYDW_CMP_THA", "MAT_CALC_DAY"),
+  outputPath      = "use_cases/1_MOA",
+  outputFile      = "moa_with_tpp",
+  useBP           = TRUE,
+  BP_file         = "/abs/path/to/TPP_traits_for_Bioflow.csv",
+  TR_mapping_file = "variable_tr_mapping.csv"   # resolved next to the pheno file
+)
+```
+
+> **Sensitivity of `TPP_traits_for_Bioflow.csv`.** This breeding-portal TPP file
+> is **confidential market data**. This EBS RData script is the **only** code
+> path permitted to read it, and it is supplied at runtime via `BP_file` (an
+> absolute path). It must **never** be committed to or shipped with this
+> repository or with Bioflow — both repositories gitignore the filename. Bioflow
+> itself never reads the raw file; it consumes only the TPP object embedded in
+> the generated RData, and a Bioflow build-and-verification test fails if any
+> Bioflow code path references the filename.
+
 ### Column mapping and bundling
 
 The scripts are maintained as modular files under `scripts/` and bundled into a

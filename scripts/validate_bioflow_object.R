@@ -746,20 +746,39 @@ vbo_exec_mta <- function(object) {
     # asreml must be attached: metASREML relies on asreml's family helpers
     # (e.g. asr_gaussian) being on the search path, not just the namespace.
     suppressWarnings(suppressMessages(try(attachNamespace("asreml"), silent = TRUE)))
+    # helper: run metASREML with a given heritability filter; returns
+    # list(ok, npred, err). Mirrors tryMet() for LMMsolve so the two engines
+    # report on equal footing (default filter first, bypass only if needed).
     # metASREML needs covMod/addG lists aligned to randomTerm ("none" = no kernel).
-    aOut <- tryCatch(
-      cgiarPipeline::metASREML(phenoDTfile = object, analysisId = soaId, trait = trait1,
-                               fixedTerm = list("1"), randomTerm = list("designation"),
-                               covMod = list("none"), addG = list("none"),
-                               heritLB = 0, heritUB = 1, verbose = FALSE),
-      error = function(e) e, warning = function(w) w
-    )
-    if (inherits(aOut, "condition")) {
-      rec <- vbo_exec(rec, "moa_asreml_main", "MOA main-effects (ASREML)", FALSE,
-                      vbo_err1(aOut))
-    } else {
+    tryAsr <- function(bypass) {
+      args <- list(phenoDTfile = object, analysisId = soaId, trait = trait1,
+                   fixedTerm = list("1"), randomTerm = list("designation"),
+                   covMod = list("none"), addG = list("none"), verbose = FALSE)
+      if (bypass) { args$heritLB <- 0; args$heritUB <- 1 }
+      out <- tryCatch(do.call(cgiarPipeline::metASREML, args),
+                      error = function(e) e, warning = function(w) w)
+      if (inherits(out, "condition")) return(list(ok = FALSE, npred = 0, err = vbo_err1(out)))
+      np <- tryCatch(sum(out$status$module == "moaAsr"), error = function(e) 0)
+      list(ok = TRUE, npred = np, err = "")
+    }
+
+    # Default filter first, then bypass if it failed or kept no environment.
+    d <- tryAsr(bypass = FALSE)
+    if (d$ok && d$npred > 0) {
       rec <- vbo_exec(rec, "moa_asreml_main", "MOA main-effects (ASREML)", TRUE, "",
-                      "ran with heritability filter bypassed (heritLB=0, heritUB=1)")
+                      "ran with default heritability filter [0.15, 0.95]")
+    } else {
+      b <- tryAsr(bypass = TRUE)
+      if (b$ok) {
+        dmsg <- if (d$ok) "default filter kept no environment" else d$err
+        rec <- vbo_exec(rec, "moa_asreml_main", "MOA main-effects (ASREML)", TRUE,
+                        paste0("Default filter failed/empty (", dmsg, ")"),
+                        "ran ONLY after bypassing the heritability filter (heritLB=0, heritUB=1)")
+      } else {
+        dmsg <- if (d$ok) "kept no environment" else d$err
+        rec <- vbo_exec(rec, "moa_asreml_main", "MOA main-effects (ASREML)", FALSE,
+                        paste0("default filter: ", dmsg, " | bypassed filter: ", b$err))
+      }
     }
   } else {
     rec <- vbo_exec(rec, "moa_asreml_main", "MOA main-effects (ASREML)", FALSE,
